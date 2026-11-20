@@ -2629,7 +2629,7 @@ static void ami_tool_info_show_flat_actions(AmiToolApp* app) {
     furi_assert(app);
     submenu_reset(app->submenu);
     submenu_set_header(app->submenu, "All actions");
-    app->info_menu_depth = 1;
+    app->info_menu_depth = 2;
     submenu_add_item(
         app->submenu,
         "Emulate",

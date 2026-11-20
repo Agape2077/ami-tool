@@ -483,6 +483,63 @@ static void library_series_collect(const LibraryRecord* rec, void* context) {
     ctx->count++;
 }
 
+typedef struct {
+    size_t moved;
+    size_t failed;
+} MoveUnrecognizedContext;
+
+static void library_move_unrecognized_collect(const LibraryRecord* rec, void* context) {
+    MoveUnrecognizedContext* ctx = context;
+    if(rec->name[0] != '\0') return;
+
+    char src[AMI_TOOL_LIBRARY_PATH_MAX];
+    library_build_abs(src, sizeof(src), rec->rel);
+    if(src[0] == '\0') {
+        ctx->failed++;
+        return;
+    }
+
+    const char* base = strrchr(rec->rel, '/');
+    base = base ? base + 1 : rec->rel;
+
+    char dst[AMI_TOOL_LIBRARY_PATH_MAX];
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    bool ok = false;
+    for(unsigned attempt = 0; attempt < 20 && !ok; attempt++) {
+        if(attempt == 0) {
+            snprintf(dst, sizeof(dst), "%s/unsorted/%.80s", AMI_TOOL_NFC_FOLDER, base);
+        } else {
+            snprintf(
+                dst,
+                sizeof(dst),
+                "%s/unsorted/%u_%.72s",
+                AMI_TOOL_NFC_FOLDER,
+                attempt,
+                base);
+        }
+        if(storage_common_exists(storage, dst)) continue;
+        ok = storage_common_rename(storage, src, dst) == FSE_OK;
+    }
+    furi_record_close(RECORD_STORAGE);
+
+    if(ok) {
+        ctx->moved++;
+    } else {
+        ctx->failed++;
+    }
+}
+
+size_t ami_tool_library_move_unrecognized(AmiToolApp* app) {
+    if(!app || !app->storage) return 0;
+
+    storage_simply_mkdir(app->storage, AMI_TOOL_NFC_FOLDER);
+    storage_simply_mkdir(app->storage, AMI_TOOL_NFC_FOLDER "/unsorted");
+
+    MoveUnrecognizedContext ctx = {.moved = 0, .failed = 0};
+    library_stream_ids(app, library_move_unrecognized_collect, &ctx);
+    return ctx.moved;
+}
+
 size_t ami_tool_library_series_list(AmiToolApp* app, AmiToolSeriesEntry* out, size_t max) {
     if(!app || !out || max == 0) return 0;
     SeriesListContext ctx = {.out = out, .max = max, .count = 0};

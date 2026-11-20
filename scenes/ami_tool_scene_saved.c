@@ -13,6 +13,7 @@
 #define SAVED_NAV_FAVORITES (0xFFFFFFF8U)
 #define SAVED_NAV_SEARCH (0xFFFFFFF9U)
 #define SAVED_NAV_UNRECOGNIZED (0xFFFFFFFAU)
+#define SAVED_NAV_MOVE_UNRECOGNIZED (0xFFFFFFFBU)
 #define SAVED_NAV_SERIES_ITEM (0xFFFF0000U)
 #define SAVED_NAV_FILE_ITEM (0xFFFF1000U)
 
@@ -171,6 +172,21 @@ static void ami_tool_scene_saved_item_callback(void* context, uint32_t index) {
         fav_page = 0;
         library_mode = LibraryModeFavorites;
         ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_MOVE_UNRECOGNIZED) {
+        size_t moved = ami_tool_library_move_unrecognized(app);
+        ami_tool_library_rebuild(app);
+        library_mode = LibraryModeUnrecognized;
+        unrec_page = 0;
+        ami_tool_scene_saved_build_menu(app);
+        char text[96];
+        snprintf(
+            text,
+            sizeof(text),
+            "Moved %u file(s) to\n/ext/nfc/unsorted",
+            (unsigned)moved);
+        ami_tool_info_show_action_message(app, text);
         return;
     }
     if(index == SAVED_NAV_UNRECOGNIZED) {
@@ -424,6 +440,13 @@ static void ami_tool_scene_saved_build_menu(AmiToolApp* app) {
 
         submenu_add_item(
             app->submenu, "Back to library", SAVED_NAV_BACK_ALL, ami_tool_scene_saved_item_callback, app);
+
+        submenu_add_item(
+            app->submenu,
+            "Move all to /ext/nfc/unsorted",
+            SAVED_NAV_MOVE_UNRECOGNIZED,
+            ami_tool_scene_saved_item_callback,
+            app);
 
         size_t count = ami_tool_library_page_count();
         for(size_t i = 0; i < count; i++) {

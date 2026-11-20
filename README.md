@@ -16,7 +16,8 @@ SD card. Built as a Flipper application (`ufbt`, API 87.1, target f7).
   counts, case/spacing tolerant).
 - **Favorites** stored by Amiibo ID in `.ami_tool/fav`.
 - **Search** by name, series or path (case-insensitive, paginated).
-- **Unrecognized** view listing files without a valid Amiibo ID.
+- **Unrecognized** view listing files without a valid Amiibo ID, with a
+  `Move all to /ext/nfc/unsorted` action (non-destructive; the index is rebuilt afterwards).
 - Automatic re-index when the library folder timestamp changes; cached ids are validated by
   path so a replaced collection cannot be mislabelled.
 
@@ -107,7 +108,6 @@ for ~1000 files) but loses no dump.
 - Game-data parsers exist for Super Smash Bros. Ultimate (read + write) and SSB for
   3DS/Wii U (read + write). Both follow documented/reference layouts and have been validated
   with synthetic dumps through the real crypto path, but not against console-written dumps.
-- The flat `All actions` list has no Back to the grouped menu.
 
 ## Docs
 

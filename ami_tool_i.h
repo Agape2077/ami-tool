@@ -409,6 +409,7 @@ size_t ami_tool_library_favorites_page(AmiToolApp* app, size_t page);
 size_t ami_tool_library_favorites_total(AmiToolApp* app);
 size_t ami_tool_library_search_page(AmiToolApp* app, const char* query, size_t page);
 size_t ami_tool_library_unrecognized_page(AmiToolApp* app, size_t page);
+size_t ami_tool_library_move_unrecognized(AmiToolApp* app);
 bool ami_tool_library_is_favorite(AmiToolApp* app, const char* id);
 void ami_tool_library_append_ids(AmiToolApp* app, size_t page);
 bool ami_tool_library_start_index_all(AmiToolApp* app);
