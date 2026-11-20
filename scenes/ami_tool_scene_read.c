@@ -234,7 +234,9 @@ bool ami_tool_scene_read_on_event(void* context, SceneManagerEvent event) {
         case AmiToolEventInfoActionEmulate:
             if(!ami_tool_info_start_emulation(app)) {
                 ami_tool_info_show_action_message(
-                    app, "Unable to start emulation.\nRead or generate an Amiibo first.");
+                    app,
+                    "Unable to start emulation.\n\nRead a tag first.\n"
+                    "If a dump is already loaded, its UID could not be read.");
             }
             return true;
         case AmiToolEventInfoActionUsage:
@@ -290,8 +292,13 @@ bool ami_tool_scene_read_on_event(void* context, SceneManagerEvent event) {
             ami_tool_info_show_actions_menu(app);
             return true;
         }
+        if(app->info_menu_depth >= 2) {
+            ami_tool_info_show_actions_menu(app);
+            return true;
+        }
         if(app->info_actions_visible) {
             app->info_actions_visible = false;
+            app->info_menu_depth = 0;
             ami_tool_info_refresh_current_page(app);
             return true;
         }

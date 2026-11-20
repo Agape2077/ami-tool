@@ -53,10 +53,19 @@ AmiToolApp* ami_tool_alloc(void) {
     app->info_widget = widget_alloc();
     view_dispatcher_add_view(
         app->view_dispatcher, AmiToolViewInfo, widget_get_view(app->info_widget));
+    app->text_input = text_input_alloc();
+    view_dispatcher_add_view(
+        app->view_dispatcher, AmiToolViewTextInput, text_input_get_view(app->text_input));
     app->main_menu_error_visible = false;
+    app->text_input_active = false;
+    snprintf(app->nickname_buffer, sizeof(app->nickname_buffer), "AmiTool");
+    snprintf(app->smash_buffer, sizeof(app->smash_buffer), "50 200 120 80");
+    snprintf(app->ssbu_buffer, sizeof(app->ssbu_buffer), "50 150 100");
+    snprintf(app->owner_buffer, sizeof(app->owner_buffer), "49 2024-06-12");
     app->info_actions_visible = false;
     app->info_action_message_visible = false;
     app->info_emulation_active = false;
+    app->emu_hash_before = 0;
     app->usage_info_visible = false;
     app->info_last_from_read = false;
     app->info_last_has_id = false;
@@ -163,12 +172,14 @@ void ami_tool_free(AmiToolApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, AmiToolViewMenu);
     view_dispatcher_remove_view(app->view_dispatcher, AmiToolViewTextBox);
     view_dispatcher_remove_view(app->view_dispatcher, AmiToolViewInfo);
+    view_dispatcher_remove_view(app->view_dispatcher, AmiToolViewTextInput);
 
     /* Free modules */
     submenu_free(app->submenu);
     text_box_free(app->text_box);
     furi_string_free(app->text_box_store);
     widget_free(app->info_widget);
+    text_input_free(app->text_input);
 
     /* NFC resources */
     if(app->read_thread) {
@@ -244,10 +255,130 @@ void ami_tool_free(AmiToolApp* app) {
     free(app);
 }
 
+static void ami_tool_nickname_applied(void* context) {
+    AmiToolApp* app = context;
+    app->text_input_active = false;
+    ami_tool_info_edit_nickname(app, app->nickname_buffer);
+}
+
+static void ami_tool_smash_applied(void* context) {
+    AmiToolApp* app = context;
+    app->text_input_active = false;
+    ami_tool_info_edit_smash(app, app->smash_buffer);
+}
+
+static void ami_tool_ssbu_applied(void* context) {
+    AmiToolApp* app = context;
+    app->text_input_active = false;
+    ami_tool_info_edit_ssbu(app, app->ssbu_buffer);
+}
+
+static void ami_tool_owner_applied(void* context) {
+    AmiToolApp* app = context;
+    app->text_input_active = false;
+    ami_tool_info_edit_owner(app, app->owner_buffer);
+}
+
 /* Custom events from views -> SceneManager */
 static bool ami_tool_custom_event_callback(void* context, uint32_t event) {
     furi_assert(context);
     AmiToolApp* app = context;
+    if(event == AmiToolEventInfoActionFavorite) {
+        ami_tool_library_toggle_favorite_current(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionVerify) {
+        ami_tool_info_verify_dump(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionEditNick) {
+        app->text_input_active = true;
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "Amiibo nickname (ASCII)");
+        text_input_set_result_callback(
+            app->text_input,
+            ami_tool_nickname_applied,
+            app,
+            app->nickname_buffer,
+            sizeof(app->nickname_buffer),
+            false);
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextInput);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionOwnerMii) {
+        ami_tool_info_show_owner_mii(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionSettings) {
+        ami_tool_info_show_settings(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionBackup) {
+        ami_tool_info_backup_dump(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionRestorePick) {
+        ami_tool_info_show_restore_menu(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionClearMii) {
+        ami_tool_info_clear_mii(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionRestore) {
+        ami_tool_info_restore_latest(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionSmashStats) {
+        app->text_input_active = true;
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "level attack defense speed");
+        text_input_set_result_callback(
+            app->text_input,
+            ami_tool_smash_applied,
+            app,
+            app->smash_buffer,
+            sizeof(app->smash_buffer),
+            false);
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextInput);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionSsbu) {
+        ami_tool_info_show_ssbu(app);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionSsbuStats) {
+        app->text_input_active = true;
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "level attack defense");
+        text_input_set_result_callback(
+            app->text_input,
+            ami_tool_ssbu_applied,
+            app,
+            app->ssbu_buffer,
+            sizeof(app->ssbu_buffer),
+            false);
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextInput);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionOwnerEdit) {
+        app->text_input_active = true;
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "country YYYY-MM-DD");
+        text_input_set_result_callback(
+            app->text_input,
+            ami_tool_owner_applied,
+            app,
+            app->owner_buffer,
+            sizeof(app->owner_buffer),
+            false);
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextInput);
+        return true;
+    }
+    if(event == AmiToolEventInfoActionAppData) {
+        ami_tool_info_show_appdata(app);
+        return true;
+    }
     return scene_manager_handle_custom_event(app->scene_manager, event);
 }
 

@@ -21,6 +21,20 @@ typedef enum {
     AmiToolInfoActionMenuIndexChangeUid,
     AmiToolInfoActionMenuIndexWriteTag,
     AmiToolInfoActionMenuIndexSaveToStorage,
+    AmiToolInfoActionMenuIndexFavorite,
+    AmiToolInfoActionMenuIndexVerify,
+    AmiToolInfoActionMenuIndexEditNick,
+    AmiToolInfoActionMenuIndexOwnerMii,
+    AmiToolInfoActionMenuIndexSettings,
+    AmiToolInfoActionMenuIndexBackup,
+    AmiToolInfoActionMenuIndexRestore,
+    AmiToolInfoActionMenuIndexAppData,
+    AmiToolInfoActionMenuIndexSmashStats,
+    AmiToolInfoActionMenuIndexSsbu,
+    AmiToolInfoActionMenuIndexSsbuStats,
+    AmiToolInfoActionMenuIndexOwnerEdit,
+    AmiToolInfoActionMenuIndexRestorePick,
+    AmiToolInfoActionMenuIndexClearMii,
 } AmiToolInfoActionMenuIndex;
 
 static void ami_tool_info_widget_callback(GuiButtonType result, InputType type, void* context);
@@ -1313,11 +1327,78 @@ bool ami_tool_info_write_to_tag(AmiToolApp* app) {
     return true;
 }
 
+static uint32_t ami_tool_info_pages_hash(const MfUltralightData* data) {
+    if(!data) return 0;
+    const uint8_t* p = (const uint8_t*)data->page;
+    size_t len = (size_t)data->pages_total * 4;
+    if(len > sizeof(data->page)) len = sizeof(data->page);
+    uint32_t hash = 2166136261u;
+    for(size_t i = 0; i < len; i++) {
+        hash ^= p[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static bool ami_tool_info_save_image(AmiToolApp* app, const char* path) {
+    if(!app || !path || path[0] == '\0') return false;
+    NfcDevice* device = nfc_device_alloc();
+    if(!device) return false;
+    amiibo_configure_rf_interface(app->tag_data);
+    nfc_device_set_data(device, NfcProtocolMfUltralight, (const NfcDeviceData*)app->tag_data);
+    bool ok = nfc_device_save(device, path);
+    nfc_device_free(device);
+    return ok;
+}
+
+/* Keep exactly one backup per file: the first copy made is the pristine original and is
+   never replaced by later saves. */
+static bool ami_tool_info_backup_file(AmiToolApp* app, const char* path) {
+    if(!app || !app->storage || !path || path[0] == '\0') return false;
+
+    storage_simply_mkdir(app->storage, AMI_TOOL_SAVED_FOLDER);
+    storage_simply_mkdir(app->storage, AMI_TOOL_SAVED_FOLDER "/.ami_tool");
+    storage_simply_mkdir(app->storage, AMI_TOOL_SAVED_FOLDER "/.ami_tool/backup");
+
+    const char* base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+
+    char dst[192];
+    snprintf(dst, sizeof(dst), "%s/.ami_tool/backup/%.64s", AMI_TOOL_SAVED_FOLDER, base);
+
+    if(storage_common_exists(app->storage, dst)) {
+        return true; /* original already preserved */
+    }
+
+    return storage_common_copy(app->storage, path, dst) == FSE_OK;
+}
+
 bool ami_tool_info_save_to_storage(AmiToolApp* app) {
     furi_assert(app);
 
     if(!app->tag_data || !app->tag_data_valid || !app->storage) {
         return false;
+    }
+
+    /* Saving edits the file we opened: back the old version up, then overwrite it. */
+    if(app->last_dump_path[0] != '\0') {
+        bool backed_up = ami_tool_info_backup_file(app, app->last_dump_path);
+        bool saved = ami_tool_info_save_image(app, app->last_dump_path);
+        if(saved) {
+            const char* base = strrchr(app->last_dump_path, '/');
+            base = base ? base + 1 : app->last_dump_path;
+            char text[192];
+            snprintf(
+                text,
+                sizeof(text),
+                "Overwritten:\n%.70s\n\nPrevious version %s.",
+                base,
+                backed_up ? "backed up" : "NOT backed up");
+            ami_tool_info_show_action_message(app, text);
+        } else {
+            ami_tool_info_show_action_message(app, "Writing over the source file failed.");
+        }
+        return saved;
     }
 
     char id_hex[32] = {0};
@@ -1369,6 +1450,9 @@ bool ami_tool_info_save_to_storage(AmiToolApp* app) {
         } else {
             file_name = saved_path;
         }
+        /* Remember the new file so the next save overwrites it instead of piling up. */
+        strncpy(app->last_dump_path, saved_path, sizeof(app->last_dump_path) - 1);
+        app->last_dump_path[sizeof(app->last_dump_path) - 1] = '\0';
         char message[128];
         snprintf(message, sizeof(message), "Saved Amiibo as\n%s", file_name);
         ami_tool_info_show_action_message(app, message);
@@ -1397,16 +1481,1155 @@ static void ami_tool_info_actions_submenu_callback(void* context, uint32_t index
     case AmiToolInfoActionMenuIndexSaveToStorage:
         event = AmiToolEventInfoActionSaveToStorage;
         break;
+    case AmiToolInfoActionMenuIndexFavorite:
+        event = AmiToolEventInfoActionFavorite;
+        break;
+    case AmiToolInfoActionMenuIndexVerify:
+        event = AmiToolEventInfoActionVerify;
+        break;
+    case AmiToolInfoActionMenuIndexEditNick:
+        event = AmiToolEventInfoActionEditNick;
+        break;
+    case AmiToolInfoActionMenuIndexOwnerMii:
+        event = AmiToolEventInfoActionOwnerMii;
+        break;
+    case AmiToolInfoActionMenuIndexSettings:
+        event = AmiToolEventInfoActionSettings;
+        break;
+    case AmiToolInfoActionMenuIndexBackup:
+        event = AmiToolEventInfoActionBackup;
+        break;
+    case AmiToolInfoActionMenuIndexRestore:
+        event = AmiToolEventInfoActionRestore;
+        break;
+    case AmiToolInfoActionMenuIndexAppData:
+        event = AmiToolEventInfoActionAppData;
+        break;
+    case AmiToolInfoActionMenuIndexSmashStats:
+        event = AmiToolEventInfoActionSmashStats;
+        break;
+    case AmiToolInfoActionMenuIndexSsbu:
+        event = AmiToolEventInfoActionSsbu;
+        break;
+    case AmiToolInfoActionMenuIndexSsbuStats:
+        event = AmiToolEventInfoActionSsbuStats;
+        break;
+    case AmiToolInfoActionMenuIndexOwnerEdit:
+        event = AmiToolEventInfoActionOwnerEdit;
+        break;
+    case AmiToolInfoActionMenuIndexRestorePick:
+        event = AmiToolEventInfoActionRestorePick;
+        break;
+    case AmiToolInfoActionMenuIndexClearMii:
+        event = AmiToolEventInfoActionClearMii;
+        break;
     default:
         return;
     }
     view_dispatcher_send_custom_event(app->view_dispatcher, event);
 }
 
-void ami_tool_info_show_actions_menu(AmiToolApp* app) {
+bool ami_tool_info_verify_dump(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(
+                app,
+                "key_retail.bin is missing or invalid.\n\nPut the 160-byte key at:\n"
+                "/ext/apps_data/ami_tool/key_retail.bin");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) {
+        ami_tool_info_show_action_message(app, "Out of memory.");
+        return false;
+    }
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    DerivedKey tag_key = {0};
+    const char* result = "UNKNOWN";
+    bool valid = false;
+
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_derive_key(&keys->tag, temp, &tag_key) != RFIDX_OK) {
+        result = "KEY DERIVATION FAILED";
+    } else if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        result = "DECRYPT FAILED";
+    } else {
+        RfidxStatus status = amiibo_validate_signature(&tag_key, &data_key, temp);
+        if(status == RFIDX_OK) {
+            result = "VALID";
+            valid = true;
+        } else if(status == RFIDX_AMIIBO_HMAC_VALIDATION_ERROR) {
+            result = "INVALID (HMAC mismatch)";
+        } else {
+            result = "ERROR";
+        }
+    }
+
+    char id[AMI_TOOL_LIBRARY_ID_MAX];
+    id[0] = '\0';
+    ami_tool_extract_amiibo_id(temp, id, sizeof(id));
+
+    char text[192];
+    snprintf(
+        text,
+        sizeof(text),
+        "Signature check\n\nAmiibo ID: %s\nResult: %s",
+        id[0] ? id : "n/a",
+        result);
+    ami_tool_info_show_action_message(app, text);
+
+    mf_ultralight_free(temp);
+    return valid;
+}
+
+/* Read-only view of the owner Mii block (settings+0x20, 0x60 bytes). */
+bool ami_tool_info_show_owner_mii(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        mf_ultralight_free(temp);
+        return false;
+    }
+
+    const uint8_t* raw = (const uint8_t*)temp->page;
+    furi_string_reset(app->text_box_store);
+    furi_string_cat_printf(
+        app->text_box_store, "Owner Mii (%02X..%02X)\n", 0xA0 + 0x20, 0xA0 + 0x7F);
+    for(size_t off = 0x20; off < 0x80; off += 8) {
+        furi_string_cat_printf(app->text_box_store, "%02X: ", (unsigned)(0xA0 + off));
+        for(size_t i = 0; i < 8; i++) {
+            furi_string_cat_printf(app->text_box_store, "%02X ", raw[0xA0 + off + i]);
+        }
+        furi_string_cat(app->text_box_store, "\n");
+    }
+    furi_string_cat(app->text_box_store, "\nPress Back to return.");
+
+    text_box_reset(app->text_box);
+    text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
+    app->info_action_message_visible = true;
+    app->info_actions_visible = false;
+
+    mf_ultralight_free(temp);
+    return true;
+}
+
+/* Restore the newest backup as a new library file (never overwrites the source). */
+static bool ami_tool_info_restore_file(AmiToolApp* app, const char* name) {
+    if(!app || !name || name[0] == '\0') return false;
+
+    char src[192];
+    char dst[192];
+    snprintf(src, sizeof(src), "%s/.ami_tool/backup/%.80s", AMI_TOOL_SAVED_FOLDER, name);
+    snprintf(dst, sizeof(dst), "%s/restored_%.80s", AMI_TOOL_SAVED_FOLDER, name);
+
+    FS_Error status = storage_common_copy(app->storage, src, dst);
+
+    char text[192];
+    if(status == FSE_OK) {
+        snprintf(
+            text,
+            sizeof(text),
+            "Restored from:\n%.60s\n\nSaved as:\nrestored_%.60s",
+            name,
+            name);
+    } else {
+        snprintf(text, sizeof(text), "Restore failed (%d).", (int)status);
+    }
+    ami_tool_info_show_action_message(app, text);
+    return status == FSE_OK;
+}
+
+/* Restore picker: list the files inside .ami_tool/backup. */
+#define AMI_TOOL_RESTORE_MAX (12U)
+static char restore_names[AMI_TOOL_RESTORE_MAX][64];
+static size_t restore_count = 0;
+
+static void ami_tool_info_restore_menu_callback(void* context, uint32_t index) {
+    AmiToolApp* app = context;
+    if(index >= restore_count) return;
+    ami_tool_info_restore_file(app, restore_names[index]);
+}
+
+void ami_tool_info_show_restore_menu(AmiToolApp* app) {
+    furi_assert(app);
+
+    restore_count = 0;
+    File* dir = storage_file_alloc(app->storage);
+    if(dir) {
+        if(storage_dir_open(dir, AMI_TOOL_SAVED_FOLDER "/.ami_tool/backup")) {
+            FileInfo info;
+            char name[96];
+            while(restore_count < AMI_TOOL_RESTORE_MAX &&
+                  storage_dir_read(dir, &info, name, sizeof(name))) {
+                if(file_info_is_dir(&info)) continue;
+                strncpy(
+                    restore_names[restore_count], name, sizeof(restore_names[0]) - 1);
+                restore_names[restore_count][sizeof(restore_names[0]) - 1] = '\0';
+                restore_count++;
+            }
+            storage_dir_close(dir);
+        }
+        storage_file_free(dir);
+    }
+
+    submenu_reset(app->submenu);
+    submenu_set_header(app->submenu, "Restore backup");
+    if(restore_count == 0) {
+        submenu_add_item(app->submenu, "No backups found", 0xFFFF, NULL, app);
+    }
+    for(size_t i = 0; i < restore_count; i++) {
+        char label[64];
+        snprintf(label, sizeof(label), "%.40s", restore_names[i]);
+        submenu_add_item(
+            app->submenu, label, (uint32_t)i, ami_tool_info_restore_menu_callback, app);
+    }
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+    app->info_actions_visible = true;
+    app->info_menu_depth = 2;
+    app->info_action_message_visible = false;
+    app->usage_info_visible = false;
+}
+
+bool ami_tool_info_restore_latest(AmiToolApp* app) {
+    furi_assert(app);
+
+    char newest[96];
+    newest[0] = '\0';
+
+    /* Prefer the backup belonging to the dump we opened, so restoring is predictable. */
+    if(app->last_dump_path[0] != '\0') {
+        const char* base = strrchr(app->last_dump_path, '/');
+        base = base ? base + 1 : app->last_dump_path;
+        char candidate[192];
+        snprintf(
+            candidate,
+            sizeof(candidate),
+            "%s/.ami_tool/backup/%.64s",
+            AMI_TOOL_SAVED_FOLDER,
+            base);
+        if(storage_common_exists(app->storage, candidate)) {
+            strncpy(newest, base, sizeof(newest) - 1);
+            newest[sizeof(newest) - 1] = '\0';
+        }
+    }
+
+    File* dir = storage_file_alloc(app->storage);
+    if(!dir) return false;
+
+    if(newest[0] == '\0' && storage_dir_open(dir, AMI_TOOL_SAVED_FOLDER "/.ami_tool/backup")) {
+        FileInfo info;
+        char name[96];
+        while(storage_dir_read(dir, &info, name, sizeof(name))) {
+            if(file_info_is_dir(&info)) continue;
+            if(strcmp(name, newest) > 0) {
+                strncpy(newest, name, sizeof(newest) - 1);
+                newest[sizeof(newest) - 1] = '\0';
+            }
+        }
+        storage_dir_close(dir);
+    }
+    storage_file_free(dir);
+
+    if(newest[0] == '\0') {
+        ami_tool_info_show_action_message(
+            app, "No backups found.\n\nUse \"Backup dump\" first.");
+        return false;
+    }
+
+    char src[192];
+    char dst[192];
+    (void)src;
+    (void)dst;
+    return ami_tool_info_restore_file(app, newest);
+}
+
+static const char* ami_tool_info_appid_name(uint32_t app_id) {
+    switch(app_id) {
+    case 0x10110E00:
+        return "Super Smash Bros.";
+    case 0x0014F000:
+        return "Animal Crossing: HHD";
+    case 0x00152600:
+        return "Chibi-Robo!: Zip Lash";
+    case 0x1019C800:
+        return "Zelda: Twilight Princess HD";
+    default:
+        return "";
+    }
+}
+
+static void ami_tool_info_format_smash(AmiToolApp* app, const uint8_t* ad);
+
+/* Rewrite Smash FP stats: "level attack defense speed", clamped to 50 / 200 / 200 / 200. */
+bool ami_tool_info_edit_smash(AmiToolApp* app, const char* spec) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    int level = 0;
+    int attack = 0;
+    int defense = 0;
+    int speed = 0;
+    if(sscanf(spec, "%d %d %d %d", &level, &attack, &defense, &speed) != 4) {
+        ami_tool_info_show_action_message(
+            app, "Expected 4 numbers:\nlevel attack defense speed");
+        return false;
+    }
+    if(level < 0) level = 0;
+    if(level > 50) level = 50;
+    if(attack < 0) attack = 0;
+    if(defense < 0) defense = 0;
+    if(speed < 0) speed = 0;
+    if(attack > 200) attack = 200;
+    if(defense > 200) defense = 200;
+    if(speed > 200) speed = 200;
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    DerivedKey tag_key = {0};
+    bool ok = false;
+    bool decrypted = false;
+
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_derive_key(&keys->tag, temp, &tag_key) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Key derivation failed.");
+        goto done;
+    }
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        goto done;
+    }
+    decrypted = true;
+
+    {
+        uint8_t* raw = (uint8_t*)temp->page;
+        uint32_t app_id = ((uint32_t)raw[0xA0 + 0x8A] << 24) |
+                          ((uint32_t)raw[0xA0 + 0x8B] << 16) |
+                          ((uint32_t)raw[0xA0 + 0x8C] << 8) | (uint32_t)raw[0xA0 + 0x8D];
+        if(app_id != 0x10110E00) {
+            ami_tool_info_show_action_message(
+                app,
+                "This dump is not a Smash Bros. FP.\n(AppID is not 0x10110E00.)");
+            goto done;
+        }
+
+        uint8_t* ad = raw + 0xA0 + 0xB0;
+        ad[0x7C] = (uint8_t)(level & 0xFF);
+        ad[0x7D] = (uint8_t)((level >> 8) & 0xFF);
+        ad[0x7E] = 0;
+        ad[0x7F] = 0;
+        ad[0x11] = (uint8_t)(attack & 0xFF);
+        ad[0x12] = (uint8_t)((attack >> 8) & 0xFF);
+        ad[0x13] = (uint8_t)(defense & 0xFF);
+        ad[0x14] = (uint8_t)((defense >> 8) & 0xFF);
+        ad[0x15] = (uint8_t)(speed & 0xFF);
+        ad[0x16] = (uint8_t)((speed >> 8) & 0xFF);
+    }
+
+    if(amiibo_sign_payload(&tag_key, &data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-signing failed.");
+        goto done;
+    }
+    bool signature_ok = (amiibo_validate_signature(&tag_key, &data_key, temp) == RFIDX_OK);
+
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-encrypt failed.");
+        goto done;
+    }
+    decrypted = false;
+
+    {
+        char text[192];
+        snprintf(
+            text,
+            sizeof(text),
+            "Smash FP stats applied\nL%02d A%03d D%03d S%03d\nSig: %s\n\nSave to Storage writes it to the\nsource file (original is backed up).",
+            level,
+            attack,
+            defense,
+            speed,
+            signature_ok ? "VALID" : "INVALID");
+        mf_ultralight_copy(app->tag_data, temp);
+        app->tag_data_valid = true;
+        ok = true;
+        ami_tool_info_show_action_message(app, text);
+    }
+
+done:
+    if(decrypted) {
+        amiibo_cipher(&data_key, temp);
+    }
+    mf_ultralight_free(temp);
+    return ok;
+}
+
+/* Super Smash Bros. for 3DS/Wii U Figure Player AppData (0xD8 bytes). */
+/* --- Super Smash Bros. Ultimate (Switch) Figure Player data ---
+   Layout from odwdinc/SSBU_Amiibo: data block at 0xE0 (0xD4 bytes), CRC32 at 0xDC,
+   struct "< ? 9s B B B 93s h 2s h h 1s H 17s 59s B 16s" with DataOffset 0x02. */
+static const uint16_t ssbu_level_xp[51] = {
+    0,    0,    8,    22,   41,   63,   90,   120,  155,  195,  238,  284,  330,
+    376,  426,  476,  528,  580,  632,  684,  737,  790,  843,  896,  950,  1004,
+    1058, 1112, 1167, 1222, 1277, 1339, 1406, 1478, 1555, 1637, 1724, 1816, 1910,
+    2012, 2115, 2220, 2329, 2459, 2619, 2799, 2999, 3209, 3429, 3669, 3912,
+};
+
+static uint32_t ssbu_crc32(const uint8_t* data, size_t len) {
+    uint32_t crc = 0;
+    for(size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for(size_t b = 0; b < 8; b++) {
+            if(crc & 1U) {
+                crc = (crc >> 1) ^ 0xEDB88320U;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return ~crc;
+}
+
+static uint16_t ssbu_read_u16(const uint8_t* p) {
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static void ssbu_write_crc(uint8_t* raw) {
+    uint32_t crc = ssbu_crc32(raw + 0xE0, 0xD4);
+    raw[0xDC] = (uint8_t)(crc & 0xFF);
+    raw[0xDD] = (uint8_t)((crc >> 8) & 0xFF);
+    raw[0xDE] = (uint8_t)((crc >> 16) & 0xFF);
+    raw[0xDF] = (uint8_t)((crc >> 24) & 0xFF);
+}
+
+bool ami_tool_info_show_ssbu(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        mf_ultralight_free(temp);
+        return false;
+    }
+
+    const uint8_t* raw = (const uint8_t*)temp->page;
+    const uint8_t* block = raw + 0xE2;
+
+    uint32_t stored_crc = (uint32_t)raw[0xDC] | ((uint32_t)raw[0xDD] << 8) |
+                          ((uint32_t)raw[0xDE] << 16) | ((uint32_t)raw[0xDF] << 24);
+    uint32_t calc_crc = ssbu_crc32(raw + 0xE0, 0xD4);
+
+    uint16_t xp = ssbu_read_u16(block + 0x6C);
+    int16_t attack = (int16_t)ssbu_read_u16(block + 0x70);
+    int16_t defense = (int16_t)ssbu_read_u16(block + 0x72);
+
+    int level_int = 50;
+    int level_frac = 0;
+    for(int i = 1; i < 50; i++) {
+        if(xp >= ssbu_level_xp[i] && xp < ssbu_level_xp[i + 1]) {
+            level_int = i;
+            uint16_t span = (uint16_t)(ssbu_level_xp[i + 1] - ssbu_level_xp[i]);
+            level_frac = span ? (int)((xp - ssbu_level_xp[i]) * 10 / span) : 0;
+            break;
+        }
+    }
+
+    furi_string_reset(app->text_box_store);
+    furi_string_cat(app->text_box_store, "SSBU Figure Player\n\n");
+    furi_string_cat(
+        app->text_box_store,
+        (stored_crc == calc_crc) ? "CRC: OK (SSBU data)\n" : "CRC: mismatch (not SSBU data)\n");
+    furi_string_cat_printf(
+        app->text_box_store, "Level: %d.%d (XP %u)\n", level_int, level_frac, (unsigned)xp);
+    furi_string_cat_printf(app->text_box_store, "Atk/Def: %d/%d\n", (int)attack, (int)defense);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Moves: %u/%u/%u\n",
+        (unsigned)block[0x0C],
+        (unsigned)block[0x0D],
+        (unsigned)block[0x0E]);
+    furi_string_cat_printf(app->text_box_store, "Learn: %s\n", block[0x02] ? "yes" : "no");
+    furi_string_cat_printf(app->text_box_store, "Color: %u\n", (unsigned)block[0xC3]);
+    furi_string_cat_printf(
+        app->text_box_store, "Gift: 0x%04X\n", (unsigned)ssbu_read_u16(block + 0x75));
+    furi_string_cat(app->text_box_store, "\nPress Back to return.");
+
+    text_box_reset(app->text_box);
+    text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
+    app->info_action_message_visible = true;
+    app->info_actions_visible = false;
+
+    mf_ultralight_free(temp);
+    return stored_crc == calc_crc;
+}
+
+bool ami_tool_info_edit_ssbu(AmiToolApp* app, const char* spec) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    int level = 0;
+    int attack = 0;
+    int defense = 0;
+    if(sscanf(spec, "%d %d %d", &level, &attack, &defense) != 3) {
+        ami_tool_info_show_action_message(app, "Expected 3 numbers:\nlevel attack defense");
+        return false;
+    }
+    if(level < 1) level = 1;
+    if(level > 50) level = 50;
+    if(attack < -200) attack = -200;
+    if(attack > 200) attack = 200;
+    if(defense < -200) defense = -200;
+    if(defense > 200) defense = 200;
+
+    uint16_t xp = ssbu_level_xp[level];
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    DerivedKey tag_key = {0};
+    bool ok = false;
+    bool decrypted = false;
+
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_derive_key(&keys->tag, temp, &tag_key) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Key derivation failed.");
+        goto done;
+    }
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        goto done;
+    }
+    decrypted = true;
+
+    {
+        uint8_t* raw = (uint8_t*)temp->page;
+        uint32_t stored = (uint32_t)raw[0xDC] | ((uint32_t)raw[0xDD] << 8) |
+                          ((uint32_t)raw[0xDE] << 16) | ((uint32_t)raw[0xDF] << 24);
+        if(ssbu_crc32(raw + 0xE0, 0xD4) != stored) {
+            ami_tool_info_show_action_message(
+                app, "This dump has no valid SSBU data block.\nUpdate it in SSBU first.");
+            goto done;
+        }
+
+        uint8_t* block = raw + 0xE2;
+        block[0x6C] = (uint8_t)(xp & 0xFF);
+        block[0x6D] = (uint8_t)((xp >> 8) & 0xFF);
+        block[0x70] = (uint8_t)((uint16_t)attack & 0xFF);
+        block[0x71] = (uint8_t)(((uint16_t)attack >> 8) & 0xFF);
+        block[0x72] = (uint8_t)((uint16_t)defense & 0xFF);
+        block[0x73] = (uint8_t)(((uint16_t)defense >> 8) & 0xFF);
+
+        ssbu_write_crc(raw);
+    }
+
+    if(amiibo_sign_payload(&tag_key, &data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-signing failed.");
+        goto done;
+    }
+    bool signature_ok = (amiibo_validate_signature(&tag_key, &data_key, temp) == RFIDX_OK);
+
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-encrypt failed.");
+        goto done;
+    }
+    decrypted = false;
+
+    {
+        char text[192];
+        snprintf(
+            text,
+            sizeof(text),
+            "SSBU FP stats applied\nL%02d A%03d D%03d (XP %u)\nSig: %s\n\nSave to Storage writes it to the\nsource file (original is backed up).",
+            level,
+            attack,
+            defense,
+            (unsigned)xp,
+            signature_ok ? "VALID" : "INVALID");
+        mf_ultralight_copy(app->tag_data, temp);
+        app->tag_data_valid = true;
+        ok = true;
+        ami_tool_info_show_action_message(app, text);
+    }
+
+done:
+    if(decrypted) {
+        amiibo_cipher(&data_key, temp);
+    }
+    mf_ultralight_free(temp);
+    return ok;
+}
+
+static void ami_tool_info_format_smash(AmiToolApp* app, const uint8_t* ad) {
+    uint32_t version = (uint32_t)ad[0] | ((uint32_t)ad[1] << 8) | ((uint32_t)ad[2] << 16) |
+                       ((uint32_t)ad[3] << 24);
+    int16_t attack = (int16_t)(uint16_t)((uint16_t)ad[0x11] | ((uint16_t)ad[0x12] << 8));
+    int16_t defense = (int16_t)(uint16_t)((uint16_t)ad[0x13] | ((uint16_t)ad[0x14] << 8));
+    int16_t speed = (int16_t)(uint16_t)((uint16_t)ad[0x15] | ((uint16_t)ad[0x16] << 8));
+    uint32_t level_raw = (uint32_t)ad[0x7C] | ((uint32_t)ad[0x7D] << 8) |
+                         ((uint32_t)ad[0x7E] << 16) | ((uint32_t)ad[0x7F] << 24);
+
+    furi_string_cat(app->text_box_store, "\n-- Smash FP --\n");
+    furi_string_cat_printf(app->text_box_store, "Version: %lu\n", (unsigned long)version);
+    furi_string_cat_printf(app->text_box_store, "Fighter: %u\n", (unsigned)ad[0x8]);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Specials: %u/%u/%u/%u\n",
+        (unsigned)ad[0x9] + 1,
+        (unsigned)ad[0xA] + 1,
+        (unsigned)ad[0xB] + 1,
+        (unsigned)ad[0xC] + 1);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Effects: %02X %02X %02X %02X\n",
+        ad[0xD],
+        ad[0xE],
+        ad[0xF],
+        ad[0x10]);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Atk/Def/Spd: %d/%d/%d\n",
+        (int)attack,
+        (int)defense,
+        (int)speed);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Level raw: %08lX (u16 %u)\n",
+        (unsigned long)level_raw,
+        (unsigned)(level_raw & 0xFFFF));
+}
+
+/* Generic AppData browser: app id, write counter and a hex/ASCII dump of the
+   0xD8-byte game area (plaintext settings+0xB0, raw 0x150). */
+bool ami_tool_info_show_appdata(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        mf_ultralight_free(temp);
+        return false;
+    }
+
+    const uint8_t* raw = (const uint8_t*)temp->page;
+    const size_t app_off = 0xA0 + 0xB0;
+    uint32_t app_id = ((uint32_t)raw[0xA0 + 0x8A] << 24) | ((uint32_t)raw[0xA0 + 0x8B] << 16) |
+                      ((uint32_t)raw[0xA0 + 0x8C] << 8) | (uint32_t)raw[0xA0 + 0x8D];
+    uint16_t app_writes = (uint16_t)((raw[0xA0 + 0x88] << 8) | raw[0xA0 + 0x89]);
+
+    furi_string_reset(app->text_box_store);
+    furi_string_cat_printf(app->text_box_store, "AppData\n\n");
+    furi_string_cat_printf(app->text_box_store, "AppID: %08lX\n", (unsigned long)app_id);
+    const char* app_name = ami_tool_info_appid_name(app_id);
+    if(app_name[0] != '\0') {
+        furi_string_cat_printf(app->text_box_store, "%s\n", app_name);
+    }
+    furi_string_cat_printf(app->text_box_store, "Writes: %u\n\n", app_writes);
+    furi_string_cat(
+        app->text_box_store, "Game area 150-207 (184 bytes on tag)\n\n");
+
+    if(app_id == 0x10110E00) {
+        ami_tool_info_format_smash(app, raw + app_off);
+        furi_string_cat(app->text_box_store, "\n");
+    }
+
+    for(size_t base = 0; base < 0xB8; base += 8) {
+        furi_string_cat_printf(app->text_box_store, "%03X ", (unsigned)(app_off + base));
+        for(size_t i = 0; i < 8; i++) {
+            furi_string_cat_printf(app->text_box_store, "%02X ", raw[app_off + base + i]);
+        }
+        furi_string_cat(app->text_box_store, " ");
+        for(size_t i = 0; i < 8; i++) {
+            uint8_t c = raw[app_off + base + i];
+            furi_string_push_back(
+                app->text_box_store, (c >= 0x20 && c < 0x7F) ? (char)c : '.');
+        }
+        furi_string_cat(app->text_box_store, "\n");
+    }
+    furi_string_cat(app->text_box_store, "\nPress Back to return.");
+
+    text_box_reset(app->text_box);
+    text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
+    app->info_action_message_visible = true;
+    app->info_actions_visible = false;
+
+    mf_ultralight_free(temp);
+    return true;
+}
+
+/* Owner attributes: country code and setup/last-write dates, "country YYYY-MM-DD". */
+bool ami_tool_info_edit_owner(AmiToolApp* app, const char* spec) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    int country = 0;
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if(sscanf(spec, "%d %d-%d-%d", &country, &year, &month, &day) != 4) {
+        ami_tool_info_show_action_message(app, "Format: country YYYY-MM-DD");
+        return false;
+    }
+    if(country < 0) country = 0;
+    if(country > 255) country = 255;
+    if(year < 2000) year = 2000;
+    if(year > 2127) year = 2127;
+    if(month < 1) month = 1;
+    if(month > 12) month = 12;
+    if(day < 1) day = 1;
+    if(day > 31) day = 31;
+
+    uint16_t date = (uint16_t)(((year - 2000) << 9) | (month << 5) | day);
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    DerivedKey tag_key = {0};
+    bool ok = false;
+    bool decrypted = false;
+
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_derive_key(&keys->tag, temp, &tag_key) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Key derivation failed.");
+        goto done;
+    }
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        goto done;
+    }
+    decrypted = true;
+
+    {
+        uint8_t* raw = (uint8_t*)temp->page;
+        raw[0xA1] = (uint8_t)country;
+        raw[0xA4] = (uint8_t)(date >> 8);
+        raw[0xA5] = (uint8_t)(date & 0xFF);
+        raw[0xA6] = (uint8_t)(date >> 8);
+        raw[0xA7] = (uint8_t)(date & 0xFF);
+    }
+
+    if(amiibo_sign_payload(&tag_key, &data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-signing failed.");
+        goto done;
+    }
+    bool signature_ok = (amiibo_validate_signature(&tag_key, &data_key, temp) == RFIDX_OK);
+
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-encrypt failed.");
+        goto done;
+    }
+    decrypted = false;
+
+    {
+        char text[176];
+        snprintf(
+            text,
+            sizeof(text),
+            "Owner attrs applied\nCountry %d, date %04d-%02d-%02d\nSig: %s\n\nSave to Storage writes it to the\nsource file (original is backed up).",
+            country,
+            year,
+            month,
+            day,
+            signature_ok ? "VALID" : "INVALID");
+        mf_ultralight_copy(app->tag_data, temp);
+        app->tag_data_valid = true;
+        ok = true;
+        ami_tool_info_show_action_message(app, text);
+    }
+
+done:
+    if(decrypted) {
+        amiibo_cipher(&data_key, temp);
+    }
+    mf_ultralight_free(temp);
+    return ok;
+}
+
+/* Wipe the owner Mii block (settings+0x20, 0x60 bytes) and re-sign. */
+bool ami_tool_info_clear_mii(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    DerivedKey tag_key = {0};
+    bool ok = false;
+    bool decrypted = false;
+
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_derive_key(&keys->tag, temp, &tag_key) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Key derivation failed.");
+        goto done;
+    }
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        goto done;
+    }
+    decrypted = true;
+
+    memset((uint8_t*)temp->page + 0xA0 + 0x20, 0, 0x60);
+
+    if(amiibo_sign_payload(&tag_key, &data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-signing failed.");
+        goto done;
+    }
+    bool signature_ok = (amiibo_validate_signature(&tag_key, &data_key, temp) == RFIDX_OK);
+
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-encrypt failed.");
+        goto done;
+    }
+    decrypted = false;
+
+    {
+        char text[176];
+        snprintf(
+            text,
+            sizeof(text),
+            "Owner Mii cleared.\nSig: %s\n\nSave to Storage writes it to the\nsource file (original is backed up).",
+            signature_ok ? "VALID" : "INVALID");
+        mf_ultralight_copy(app->tag_data, temp);
+        app->tag_data_valid = true;
+        ok = true;
+        ami_tool_info_show_action_message(app, text);
+    }
+
+done:
+    if(decrypted) {
+        amiibo_cipher(&data_key, temp);
+    }
+    mf_ultralight_free(temp);
+    return ok;
+}
+
+/* Decrypted settings overview: flags, country, dates, nickname read back. */
+bool ami_tool_info_show_settings(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(app, "key_retail.bin is missing.");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        mf_ultralight_free(temp);
+        return false;
+    }
+
+    const uint8_t* raw = (const uint8_t*)temp->page;
+    uint8_t flags = raw[0xA0];
+    uint8_t country = raw[0xA1];
+    uint16_t setup = (uint16_t)((raw[0xA4] << 8) | raw[0xA5]);
+    uint16_t last = (uint16_t)((raw[0xA6] << 8) | raw[0xA7]);
+    uint16_t writes = (uint16_t)((raw[0xA0 + 0x88] << 8) | raw[0xA0 + 0x89]);
+
+    char nickname[11];
+    size_t nick_len = 0;
+    for(size_t i = 0; i < 10; i++) {
+        uint8_t hi = raw[0xAC + i * 2];
+        uint8_t lo = raw[0xAC + i * 2 + 1];
+        if(hi != 0 || lo == 0) break;
+        nickname[nick_len++] = (char)lo;
+    }
+    nickname[nick_len] = '\0';
+
+    furi_string_reset(app->text_box_store);
+    furi_string_cat_printf(app->text_box_store, "Amiibo settings\n\n");
+    furi_string_cat_printf(app->text_box_store, "Flags:   0x%02X\n", flags);
+    furi_string_cat_printf(app->text_box_store, "Country: %u\n", country);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Setup:   %04u-%02u-%02u\n",
+        (unsigned)(2000 + ((setup >> 9) & 0x7F)),
+        (unsigned)((setup >> 5) & 0x0F),
+        (unsigned)(setup & 0x1F));
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Written: %04u-%02u-%02u\n",
+        (unsigned)(2000 + ((last >> 9) & 0x7F)),
+        (unsigned)((last >> 5) & 0x0F),
+        (unsigned)(last & 0x1F));
+    furi_string_cat_printf(app->text_box_store, "Writes:  %u\n", writes);
+    furi_string_cat_printf(
+        app->text_box_store,
+        "Nickname: \"%s\"%s\n",
+        nickname,
+        nick_len ? "" : " (empty)");
+    furi_string_cat(app->text_box_store, "\nPress Back to return.");
+
+    text_box_reset(app->text_box);
+    text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
+    app->info_action_message_visible = true;
+    app->info_actions_visible = false;
+
+    mf_ultralight_free(temp);
+    return true;
+}
+
+/* Copy the dump we opened from the library into .ami_tool/backup. */
+bool ami_tool_info_backup_dump(AmiToolApp* app) {
+    furi_assert(app);
+
+    if(app->last_dump_path[0] == '\0') {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+
+    storage_simply_mkdir(app->storage, AMI_TOOL_SAVED_FOLDER "/.ami_tool");
+    storage_simply_mkdir(app->storage, AMI_TOOL_SAVED_FOLDER "/.ami_tool/backup");
+
+    const char* base = strrchr(app->last_dump_path, '/');
+    base = base ? base + 1 : app->last_dump_path;
+
+    char dest[192];
+    snprintf(
+        dest,
+        sizeof(dest),
+        "%s/.ami_tool/backup/%lu_%.64s",
+        AMI_TOOL_SAVED_FOLDER,
+        (unsigned long)furi_get_tick(),
+        base);
+
+    FS_Error status = storage_common_copy(app->storage, app->last_dump_path, dest);
+    char text[192];
+    if(status == FSE_OK) {
+        snprintf(text, sizeof(text), "Backup created:\n.ami_tool/backup/%.64s", base);
+    } else {
+        snprintf(text, sizeof(text), "Backup failed (%d).", (int)status);
+    }
+    ami_tool_info_show_action_message(app, text);
+    return status == FSE_OK;
+}
+
+/* Owner nickname lives in the decrypted settings block: 20 bytes of UTF-16BE
+   at settings+0xC, settings starting at raw 0xA0. The dump is re-signed and
+   re-encrypted, then written to a NEW file; the original is never touched. */
+bool ami_tool_info_edit_nickname(AmiToolApp* app, const char* ascii_name) {
+    furi_assert(app);
+
+    if(!app->tag_data || !app->tag_data_valid) {
+        ami_tool_info_show_action_message(app, "Open an Amiibo from the library first.");
+        return false;
+    }
+    if(!ami_tool_has_retail_key(app)) {
+        if(ami_tool_load_retail_key(app) != AmiToolRetailKeyStatusOk) {
+            ami_tool_info_show_action_message(
+                app,
+                "key_retail.bin is missing or invalid.\n\nPut the 160-byte key at:\n"
+                "/ext/apps_data/ami_tool/key_retail.bin");
+            return false;
+        }
+    }
+
+    MfUltralightData* temp = mf_ultralight_alloc();
+    if(!temp) return false;
+    mf_ultralight_copy(temp, app->tag_data);
+
+    const DumpedKeys* keys = (const DumpedKeys*)app->retail_key;
+    DerivedKey data_key = {0};
+    DerivedKey tag_key = {0};
+    bool ok = false;
+    bool decrypted = false;
+
+    if(amiibo_derive_key(&keys->data, temp, &data_key) != RFIDX_OK ||
+       amiibo_derive_key(&keys->tag, temp, &tag_key) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Key derivation failed.");
+        goto done;
+    }
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Decrypt failed.");
+        goto done;
+    }
+    decrypted = true;
+
+    {
+        uint8_t* raw = (uint8_t*)temp->page;
+        /* mark the Amiibo as set up, then overwrite the nickname */
+        raw[0xA0] |= 0x10;
+        memset(raw + 0xAC, 0, 20);
+
+        size_t len = strlen(ascii_name);
+        if(len > 10) len = 10;
+        for(size_t i = 0; i < len; i++) {
+            raw[0xAC + i * 2] = 0x00;
+            raw[0xAC + i * 2 + 1] = (uint8_t)ascii_name[i];
+        }
+    }
+
+    if(amiibo_sign_payload(&tag_key, &data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-signing failed.");
+        goto done;
+    }
+
+    bool signature_ok = (amiibo_validate_signature(&tag_key, &data_key, temp) == RFIDX_OK);
+
+    if(amiibo_cipher(&data_key, temp) != RFIDX_OK) {
+        ami_tool_info_show_action_message(app, "Re-encrypt failed.");
+        goto done;
+    }
+    decrypted = false;
+
+    {
+        char text[176];
+        snprintf(
+            text,
+            sizeof(text),
+            "Nickname set to \"%.10s\".\nSignature: %s\n\nSave to Storage writes it to the\nsource file (original is backed up).",
+            ascii_name,
+            signature_ok ? "VALID" : "INVALID");
+        mf_ultralight_copy(app->tag_data, temp);
+        app->tag_data_valid = true;
+        ok = true;
+        ami_tool_info_show_action_message(app, text);
+    }
+
+done:
+    if(decrypted) {
+        amiibo_cipher(&data_key, temp);
+    }
+    mf_ultralight_free(temp);
+    return ok;
+}
+
+static void ami_tool_info_show_flat_actions(AmiToolApp* app) {
     furi_assert(app);
     submenu_reset(app->submenu);
-    submenu_set_header(app->submenu, "Amiibo Actions");
+    submenu_set_header(app->submenu, "All actions");
+    app->info_menu_depth = 1;
     submenu_add_item(
         app->submenu,
         "Emulate",
@@ -1437,6 +2660,72 @@ void ami_tool_info_show_actions_menu(AmiToolApp* app) {
         AmiToolInfoActionMenuIndexSaveToStorage,
         ami_tool_info_actions_submenu_callback,
         app);
+    submenu_add_item(
+        app->submenu,
+        "Favorite (toggle)",
+        AmiToolInfoActionMenuIndexFavorite,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Verify dump",
+        AmiToolInfoActionMenuIndexVerify,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Set nickname (test)",
+        AmiToolInfoActionMenuIndexEditNick,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Owner Mii (hex)",
+        AmiToolInfoActionMenuIndexOwnerMii,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Show settings",
+        AmiToolInfoActionMenuIndexSettings,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Backup dump",
+        AmiToolInfoActionMenuIndexBackup,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Restore latest backup",
+        AmiToolInfoActionMenuIndexRestore,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "App Data (hex)",
+        AmiToolInfoActionMenuIndexAppData,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "Smash stats (edit)",
+        AmiToolInfoActionMenuIndexSmashStats,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "SSBU Figure Player",
+        AmiToolInfoActionMenuIndexSsbu,
+        ami_tool_info_actions_submenu_callback,
+        app);
+    submenu_add_item(
+        app->submenu,
+        "SSBU stats (edit)",
+        AmiToolInfoActionMenuIndexSsbuStats,
+        ami_tool_info_actions_submenu_callback,
+        app);
 
     view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
     app->info_actions_visible = true;
@@ -1444,8 +2733,147 @@ void ami_tool_info_show_actions_menu(AmiToolApp* app) {
     app->usage_info_visible = false;
 }
 
-void ami_tool_info_show_action_message(AmiToolApp* app, const char* message) {
+typedef enum {
+    AmiToolActionRootOperate,
+    AmiToolActionRootEdit,
+    AmiToolActionRootInspect,
+    AmiToolActionRootBackup,
+    AmiToolActionRootFlat,
+} AmiToolActionRootIndex;
+
+static void ami_tool_info_show_operate_menu(AmiToolApp* app);
+static void ami_tool_info_show_edit_menu(AmiToolApp* app);
+static void ami_tool_info_show_inspect_menu(AmiToolApp* app);
+static void ami_tool_info_show_backup_menu(AmiToolApp* app);
+
+static void ami_tool_info_group_start(AmiToolApp* app, const char* header) {
+    submenu_reset(app->submenu);
+    submenu_set_header(app->submenu, header);
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+    app->info_actions_visible = true;
+    app->info_menu_depth = 2;
+    app->info_action_message_visible = false;
+    app->usage_info_visible = false;
+}
+
+static void ami_tool_info_root_callback(void* context, uint32_t index) {
+    AmiToolApp* app = context;
+    switch(index) {
+    case AmiToolActionRootOperate:
+        ami_tool_info_show_operate_menu(app);
+        break;
+    case AmiToolActionRootEdit:
+        ami_tool_info_show_edit_menu(app);
+        break;
+    case AmiToolActionRootInspect:
+        ami_tool_info_show_inspect_menu(app);
+        break;
+    case AmiToolActionRootBackup:
+        ami_tool_info_show_backup_menu(app);
+        break;
+    case AmiToolActionRootFlat:
+        ami_tool_info_show_flat_actions(app);
+        break;
+    default:
+        break;
+    }
+}
+
+static void ami_tool_info_show_operate_menu(AmiToolApp* app) {
+    ami_tool_info_group_start(app, "Operate");
+    submenu_add_item(
+        app->submenu, "Emulate", AmiToolInfoActionMenuIndexEmulate,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Write to Tag", AmiToolInfoActionMenuIndexWriteTag,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Save to Storage", AmiToolInfoActionMenuIndexSaveToStorage,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Change UID", AmiToolInfoActionMenuIndexChangeUid,
+        ami_tool_info_actions_submenu_callback, app);
+}
+
+static void ami_tool_info_show_edit_menu(AmiToolApp* app) {
+    ami_tool_info_group_start(app, "Edit");
+    submenu_add_item(
+        app->submenu, "Set nickname", AmiToolInfoActionMenuIndexEditNick,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Owner attrs", AmiToolInfoActionMenuIndexOwnerEdit,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Clear owner Mii", AmiToolInfoActionMenuIndexClearMii,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "SSBU stats", AmiToolInfoActionMenuIndexSsbuStats,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Smash 3DS stats", AmiToolInfoActionMenuIndexSmashStats,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Favorite (toggle)", AmiToolInfoActionMenuIndexFavorite,
+        ami_tool_info_actions_submenu_callback, app);
+}
+
+static void ami_tool_info_show_inspect_menu(AmiToolApp* app) {
+    ami_tool_info_group_start(app, "Inspect");
+    submenu_add_item(
+        app->submenu, "Usage Info", AmiToolInfoActionMenuIndexUsageInfo,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Verify dump", AmiToolInfoActionMenuIndexVerify,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Show settings", AmiToolInfoActionMenuIndexSettings,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Owner Mii (hex)", AmiToolInfoActionMenuIndexOwnerMii,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "App Data (hex)", AmiToolInfoActionMenuIndexAppData,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "SSBU Figure Player", AmiToolInfoActionMenuIndexSsbu,
+        ami_tool_info_actions_submenu_callback, app);
+}
+
+static void ami_tool_info_show_backup_menu(AmiToolApp* app) {
+    ami_tool_info_group_start(app, "Backup");
+    submenu_add_item(
+        app->submenu, "Backup dump", AmiToolInfoActionMenuIndexBackup,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Restore from backup...", AmiToolInfoActionMenuIndexRestorePick,
+        ami_tool_info_actions_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Restore latest", AmiToolInfoActionMenuIndexRestore,
+        ami_tool_info_actions_submenu_callback, app);
+}
+
+void ami_tool_info_show_actions_menu(AmiToolApp* app) {
     furi_assert(app);
+    submenu_reset(app->submenu);
+    submenu_set_header(app->submenu, "Amiibo Actions");
+    submenu_add_item(
+        app->submenu, "Operate >", AmiToolActionRootOperate, ami_tool_info_root_callback, app);
+    submenu_add_item(
+        app->submenu, "Edit >", AmiToolActionRootEdit, ami_tool_info_root_callback, app);
+    submenu_add_item(
+        app->submenu, "Inspect >", AmiToolActionRootInspect, ami_tool_info_root_callback, app);
+    submenu_add_item(
+        app->submenu, "Backup >", AmiToolActionRootBackup, ami_tool_info_root_callback, app);
+    submenu_add_item(
+        app->submenu, "All actions", AmiToolActionRootFlat, ami_tool_info_root_callback, app);
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+    app->info_actions_visible = true;
+    app->info_menu_depth = 1;
+    app->info_action_message_visible = false;
+    app->usage_info_visible = false;
+}
+
+void ami_tool_info_show_action_message(AmiToolApp* app, const char* message) {    furi_assert(app);
     furi_string_reset(app->text_box_store);
     if(message && message[0] != '\0') {
         furi_string_cat(app->text_box_store, message);
@@ -1510,6 +2938,7 @@ static NfcCommand amiibo_emulation_cb(NfcGenericEvent event, void* context) {
 
 bool ami_tool_info_start_emulation(AmiToolApp* app) {
     furi_assert(app);
+
     if(!app->tag_data || !app->tag_data_valid || !app->nfc) {
         return false;
     }
@@ -1532,6 +2961,11 @@ bool ami_tool_info_start_emulation(AmiToolApp* app) {
     }
 
     ami_tool_info_stop_emulation(app);
+
+    /* Remember the image so that writes made by the reader can be detected on stop.
+       Must be set after stop_emulation(), which clears it. */
+    app->emu_hash_before = ami_tool_info_pages_hash(app->tag_data);
+
     app->emulation_listener = nfc_listener_alloc(
         app->nfc, NfcProtocolMfUltralight, (const NfcDeviceData*)app->tag_data);
     if(!app->emulation_listener) {
@@ -1541,7 +2975,9 @@ bool ami_tool_info_start_emulation(AmiToolApp* app) {
 
     furi_string_set(
         app->text_box_store,
-        "Emulating Amiibo...\n\nPlace the back of the Flipper near the reader.\nPress Back to stop.");
+        "Emulating Amiibo...\n\nPlace the back of the Flipper near the reader.\n"
+        "Changes are saved over the source file on stop\n(the previous version is backed up).\n"
+        "Press Back to stop.");
     text_box_reset(app->text_box);
     text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
     view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
@@ -1562,6 +2998,27 @@ void ami_tool_info_stop_emulation(AmiToolApp* app) {
     }
     if(app->emulation_listener) {
         nfc_listener_stop(app->emulation_listener);
+
+        /* Writes made by the reader live in the listener's own copy of the tag image.
+           Pull them back, otherwise stopping and re-emulating would discard them. */
+        const MfUltralightData* live = (const MfUltralightData*)nfc_listener_get_data(
+            app->emulation_listener, NfcProtocolMfUltralight);
+        if(live && app->tag_data) {
+            mf_ultralight_copy(app->tag_data, live);
+            app->tag_data_valid = true;
+
+            /* Auto-save: if the reader changed anything, back up the source file and
+               overwrite it with the new image. */
+            uint32_t now = ami_tool_info_pages_hash(app->tag_data);
+            if(app->emu_hash_before != 0 && now != app->emu_hash_before) {
+                if(app->last_dump_path[0] != '\0') {
+                    ami_tool_info_backup_file(app, app->last_dump_path);
+                    ami_tool_info_save_image(app, app->last_dump_path);
+                }
+            }
+            app->emu_hash_before = 0;
+        }
+
         nfc_listener_free(app->emulation_listener);
         app->emulation_listener = NULL;
     }

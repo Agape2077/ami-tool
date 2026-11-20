@@ -1,99 +1,115 @@
+# AmiTool — Amiibo manager for Flipper Zero
 
-
-# AmiTool
-
-An Flipper Zero toolkit to work with NTAG215 tags with gaming consoles.
-
-This project is usable but still in development. Ensure you back up all important data and avoid using it with another experimental setup to prevent damage or data loss.
+A Flipper Zero application to browse, inspect, edit and re-emulate Amiibo dumps stored on the
+SD card. Built as a Flipper application (`ufbt`, API 87.1, target f7).
 
 ## Features
 
-Designed as a general-purpose toolkit for Flipper Zero to work with NTAG215 figures/cards for gaming consoles, this app aims to provide the following features:
+### Library (Saved)
 
-- **Reading NTAG215 character NFC tags**: Read data from physical NTAG215 gaming tags and store it on the Flipper Zero.
-- **Displaying character information**: Show detailed information about the tag, including character name, series, type, usage, and other metadata. This information is sourced from the AmiiboAPI (https://amiiboapi.org/).
-- **Emulating NTAG215 gaming NFC tags**: Emulate the loaded data, allowing the Flipper Zero to function as the corresponding character tag.
-- **Writing game data to NFC tags**: Write currently loaded tag data to blank NTAG 215 tags, or a compatible device.
-- **Generating character data**: Create a synthetic character data structure based on selected character.  The result would be a blank data file that can be written to a blank NTAG 215 tag, with no owner or game information.
-- **Randomising the unique identifier (UID)**: Modify the UID of the loaded character data to a random valid value, allowing one tag to be used as multiple different tags.
-- **Emulating a blank tag**: Emulate a blank NTAG 215 tag that can be written into with other devices.
-- **Saving and loading character data files**: Store generated or read data files on the Flipper Zero's storage for later use.
+- Scans `/ext/nfc/amiibo` recursively (3 levels) and keeps an on-disk index in
+  `/ext/nfc/amiibo/.ami_tool/`, so opening the library does not parse any dump.
+- Identifies every file by its Amiibo ID (pages 21/22), not by its file name.
+- 12 entries per page; on-demand background indexer (`Index ALL files`) with progress and
+  cancel, plus `Index this page`, `Rescan library`.
+- **By series** grouping built from `amiibo.dat` metadata (product series, alphabetical,
+  counts, case/spacing tolerant).
+- **Favorites** stored by Amiibo ID in `.ami_tool/fav`.
+- **Search** by name, series or path (case-insensitive, paginated).
+- **Unrecognized** view listing files without a valid Amiibo ID.
+- Automatic re-index when the library folder timestamp changes; cached ids are validated by
+  path so a replaced collection cannot be mislabelled.
 
-And other combinations of the above features.
+### Amiibo actions
 
-## Installation
+`Amiibo detail → OK` opens a grouped menu:
 
-This app is not yet available in the official Flipper Zero app store. Instead, you can install it manually by following these steps:
+```
+Operate   Emulate / Write to Tag / Save to Storage / Change UID
+Edit      Set nickname / Owner attrs / Clear owner Mii / SSBU stats /
+          Smash 3DS stats / Favorite
+Inspect   Usage Info / Verify dump / Show settings / Owner Mii (hex) /
+          App Data (hex) / SSBU Figure Player
+Backup    Backup dump / Restore from backup... / Restore latest
+All       flat list of everything above
+```
 
-- Download the latest release from the [Releases](https://github.com/Firefox2100/ami-tool/releases) page.
-- Copy the `ami_tool.fap` file to the NFC apps directory on your Flipper Zero's storage (usually located at `/apps/NFC/` in SD card).
-- Restart your Flipper Zero to load the new app.
+### Crypto
 
-## Usage
+- Retail key read from `/ext/apps_data/ami_tool/key_retail.bin` (exactly 160 bytes).
+- `Verify dump` derives the per-tag data/tag keys, decrypts a copy and validates both HMACs.
+- All edits are re-signed and re-encrypted before they are written.
 
-To use the generation and UID randomisation features, you will need to have a `key_retail.bin` file available in the app data directory (`/apps_data/ami_tool`). This file contains the necessary cryptographic keys to encrypt/decrypt and sign character data. It is legally Nintendo's intellectual property, and cannot be distributed with this project. You will need to obtain it yourself, for example by dumping it from a console you own that supports such functionality, or by finding it from other sources. We will not provide instructions on how to obtain this file, as doing so may violate Nintendo's terms of service or local laws, but there are plenty of guides online.
+### Editing
 
-Following are some screenshots of the app in action, all the steps of usage are guided within the app itself.
+| Item | What it does |
+|---|---|
+| Set nickname | UTF-16BE owner nickname (ASCII input, 10 chars) at settings+0xC, sets the setup flag |
+| Owner attrs | country code and setup/last-write date at settings+0x1 / +0x4 / +0x6 |
+| Clear owner Mii | zeroes the 0x60-byte owner Mii block at settings+0x20, then re-signs |
+| SSBU stats | level (converted to XP with the 50-entry table), attack, defense, with the SSBU data-block CRC32 at 0xDC recomputed |
+| Smash 3DS stats | level, attack, defense, speed in the SSB AppData layout |
 
-**Main Menu**
+Edits modify the in-memory tag image; **Save to Storage** writes it out.
 
-![Amiibo Toolkit Main Menu](docs/screenshots/main-menu.png)
+### Emulation
 
-**Read Amiibo Tag**
+- Emulates the loaded dump over NFC; the NTAG215 password/PACK are derived from the UID.
+- Writes made by the reader while emulating are pulled back into the in-memory image when
+  emulation stops.
+- If the image changed and the dump came from a file, the file is backed up and overwritten
+  automatically (see backup policy).
 
-![Read Amiibo Tag](docs/screenshots/read-menu.png)
+### Save / backup policy
 
-**Generate Amiibo Data**
+- `Save to Storage` never creates a second file: if the dump came from the library, the
+  original file is backed up and then overwritten in place.
+- `.ami_tool/backup/<original name>` keeps exactly **one** copy — the first version seen.
+  Later saves never replace it.
+- `Restore latest backup` restores the backup of the currently opened file (or the newest one)
+  as `restored_<name>.nfc`; it never overwrites anything.
+- `Restore from backup...` lists the files in `.ami_tool/backup` and restores the chosen one.
+  Restores always create `restored_<name>.nfc` and never touch the backup or the source.
 
-![Generate Amiibo Data](docs/screenshots/generate-menu.png)
+## Requirements
 
-**Select Which Platform to Generate For**
+- Flipper Zero with a recent firmware (API 87.1).
+- `key_retail.bin` (160 bytes) placed at `/ext/apps_data/ami_tool/key_retail.bin`.
+  Without it, decryption, emulation and editing are unavailable; the library still works.
+- Amiibo dumps in `/ext/nfc/amiibo` (sub-folders are fine).
 
-![Select Platform](docs/screenshots/choose-platform.png)
+## Build
 
-**Select Game Series**
+```sh
+ufbt            # build
+ufbt launch     # build, install to /ext/apps/NFC and start on a connected Flipper
+```
 
-![Select Game Series](docs/screenshots/choose-game.png)
+## SD card layout
 
-**Select Character**
+```
+/ext/nfc/amiibo/
+    ...your dumps...
+    .ami_tool/
+        idx      indexed relative paths (one per line)
+        meta     file count + library folder timestamp
+        ids      id<TAB>name<TAB>series<TAB>path cache
+        fav      favorite Amiibo IDs
+        backup/  one pristine copy per edited file
+```
 
-![Select Character](docs/screenshots/choose-character.png)
+`.ami_tool/` is a cache + backup area: deleting it triggers a full re-index (about two minutes
+for ~1000 files) but loses no dump.
 
-**Amiibo Information Display**
+## Limitations
 
-![Amiibo Information Display](docs/screenshots/amiibo-info.png)
+- Owner Mii data is read-only apart from "Clear owner Mii"; there is no Mii editor.
+- Game-data parsers exist for Super Smash Bros. Ultimate (read + write) and SSB for
+  3DS/Wii U (read + write). Both follow documented/reference layouts and have been validated
+  with synthetic dumps through the real crypto path, but not against console-written dumps.
+- The flat `All actions` list has no Back to the grouped menu.
 
-**More Amiibo Information Display**
+## Docs
 
-![More Amiibo Information Display](docs/screenshots/amiibo-info-2.png)
-
-**Emulate Amiibo Tag**
-
-![Emulate Amiibo Tag](docs/screenshots/emulate-menu.png)
-
-**Usage Info Display**
-
-![Usage Info Display](docs/screenshots/usage-info.png)
-
-**View Saved Amiibo Files**
-
-![View Saved Amiibo Files](docs/screenshots/saved-menu.png)
-
-## Acknowledgments
-
-- Thanks to the Flipper Zero community and developers for their continuous support and inspiration.
-- The data used in this project comes from AmiiboAPI (https://amiiboapi.org/).
-- The algorighms and methods for character data manipulation are based on research and contributions from various online communities dedicated to Amiibo reverse engineering. Including but not limited to:
-  * [Reverse Engineering Nintendo Amiibo (NFC Toy)](https://kevinbrewster.github.io/Amiibo-Reverse-Engineering/), containing a very detailed analysis of the data structure.
-  * [amiitool](https://github.com/socram8888/amiitool), a command-line tool for manipulating dumped data. Note that the data is in a different format of what this project uses, and it won't work with the data stored with this app.
-  * [weebo](https://github.com/bettse/weebo), another flipper zero NTAG215 tool, which uses amiitool, confirming (for me personally) that the flipper zero can handle the cryptography involved in data manipulation.
-
-## License and Disclaimer
-
-This project and its source code is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for details. By using this project, you agree to comply with the terms of the GPL-3.0 license.
-
-The data files used in this project are sourced from AmiiboAPI (https://amiiboapi.com/), which is licensed under the [MIT License](https://github.com/N3evin/AmiiboAPI/blob/master/LICENSE). A copy of it is included in the files directory for inclusion in the release package.
-
-This project is not affiliated with or endorsed by Nintendo, AmiiboAPI, or any other tools or libraries used or mentioned herein. The developers of this project do not encourage or condone the use of this project for any illegal activities, including but not limited to copyright infringement or unauthorized duplication of proprietary data. This project is intended for educational, research, and personal use only. Users are responsible for ensuring that their use of this project complies with all applicable laws and regulations.
-
-In some jurisdictions, the use of radio equipment like the Flipper Zero may be subject to specific regulations. Users are responsible for ensuring that their use of the Flipper Zero and this project complies with all applicable laws and regulations in their jurisdiction.
+- `BUILD_NOTES_CONTENT_SCAN_V2.md` — implementation notes and the verification evidence.
+- `docs/FEATURES.md` — feature list with the hardware checks performed.

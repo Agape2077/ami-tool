@@ -4,7 +4,7 @@ App(
     apptype=FlipperAppType.EXTERNAL,
     entry_point="ami_tool_app",
     requires=["gui"],
-    stack_size=2 * 1024,
+    stack_size=8 * 1024,
     fap_category="NFC",
     fap_icon="ami_tool.png",
     fap_description="An NTAG215 toolkit for Flipper Zero to work with tags used with gaming consoles.",

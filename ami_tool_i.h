@@ -8,6 +8,7 @@
 #include <gui/view_dispatcher.h>
 #include <gui/modules/submenu.h>
 #include <gui/modules/text_box.h>
+#include <gui/modules/text_input.h>
 #include <gui/modules/widget.h>
 #include <gui/scene_manager.h>
 #include <storage/storage.h>
@@ -23,7 +24,35 @@
 #define AMI_TOOL_RETAIL_KEY_FILENAME "key_retail.bin"
 #define AMI_TOOL_GENERATE_MAX_AMIIBO_PAGE_ITEMS (32U)
 #define AMI_TOOL_SAVED_MAX_PAGE_ITEMS (12U)
+
+/* Amiibo library (Saved screen) */
+#define AMI_TOOL_LIBRARY_MAX (128U)
+#define AMI_TOOL_LIBRARY_PAGE (12U)
+#define AMI_TOOL_LIBRARY_ID_MAX (17U)
+#define AMI_TOOL_LIBRARY_NAME_MAX (40U)
+#define AMI_TOOL_LIBRARY_SERIES_MAX (24U)
+#define AMI_TOOL_LIBRARY_PATH_MAX (160U)
+
+typedef struct {
+    char rel[96];
+    char id[AMI_TOOL_LIBRARY_ID_MAX];
+    char name[AMI_TOOL_LIBRARY_NAME_MAX];
+    char series[AMI_TOOL_LIBRARY_SERIES_MAX];
+    unsigned file_index;
+    bool recognized;
+    bool persisted;
+} AmiToolLibraryItem;
+
+#define AMI_TOOL_SERIES_MAX (64U)
+
+typedef struct {
+    char name[AMI_TOOL_LIBRARY_SERIES_MAX];
+    size_t count;
+} AmiToolSeriesEntry;
 #define AMI_TOOL_NFC_FOLDER ANY_PATH("nfc")
+/* Dedicated folder for Amiibo dumps, so the generic dumps in /ext/nfc
+   (FeliCa, MIFARE Classic, ISO15693, ...) do not pollute the Saved list. */
+#define AMI_TOOL_SAVED_FOLDER AMI_TOOL_NFC_FOLDER "/amiibo"
 
 typedef struct AmiToolApp AmiToolApp;
 
@@ -90,6 +119,7 @@ typedef enum {
     AmiToolViewMenu,
     AmiToolViewTextBox,
     AmiToolViewInfo,
+    AmiToolViewTextInput,
 } AmiToolView;
 
 /* Scene IDs */
@@ -142,6 +172,20 @@ typedef enum {
     AmiToolEventInfoActionChangeUid,
     AmiToolEventInfoActionWriteTag,
     AmiToolEventInfoActionSaveToStorage,
+    AmiToolEventInfoActionFavorite,
+    AmiToolEventInfoActionVerify,
+    AmiToolEventInfoActionEditNick,
+    AmiToolEventInfoActionOwnerMii,
+    AmiToolEventInfoActionSettings,
+    AmiToolEventInfoActionBackup,
+    AmiToolEventInfoActionRestore,
+    AmiToolEventInfoActionAppData,
+    AmiToolEventInfoActionSmashStats,
+    AmiToolEventInfoActionSsbu,
+    AmiToolEventInfoActionSsbuStats,
+    AmiToolEventInfoActionOwnerEdit,
+    AmiToolEventInfoActionRestorePick,
+    AmiToolEventInfoActionClearMii,
     AmiToolEventInfoWriteStarted,
     AmiToolEventInfoWriteSuccess,
     AmiToolEventInfoWriteFailed,
@@ -206,11 +250,20 @@ struct AmiToolApp {
 
     TextBox* text_box;
     FuriString* text_box_store;
+    TextInput* text_input;
     Widget* info_widget;
     bool main_menu_error_visible;
+    bool text_input_active;
+    char nickname_buffer[11];
+    char smash_buffer[24];
+    char ssbu_buffer[24];
+    char owner_buffer[24];
+    char last_dump_path[AMI_TOOL_LIBRARY_PATH_MAX];
     bool info_actions_visible;
+    uint8_t info_menu_depth;
     bool info_action_message_visible;
     bool info_emulation_active;
+    uint32_t emu_hash_before;
     bool usage_info_visible;
     bool info_last_from_read;
     bool info_last_has_id;
@@ -289,6 +342,7 @@ extern const SceneManagerHandlers ami_tool_scene_handlers;
 /* Allocation / free */
 AmiToolApp* ami_tool_alloc(void);
 void ami_tool_free(AmiToolApp* app);
+
 void ami_tool_generate_clear_amiibo_cache(AmiToolApp* app);
 void ami_tool_info_show_page(AmiToolApp* app, const char* id_hex, bool from_read);
 void ami_tool_info_show_actions_menu(AmiToolApp* app);
@@ -299,6 +353,19 @@ bool ami_tool_info_change_uid(AmiToolApp* app);
 bool ami_tool_info_write_to_tag(AmiToolApp* app);
 bool ami_tool_info_save_to_storage(AmiToolApp* app);
 bool ami_tool_info_show_usage(AmiToolApp* app);
+bool ami_tool_info_verify_dump(AmiToolApp* app);
+bool ami_tool_info_edit_nickname(AmiToolApp* app, const char* ascii_name);
+bool ami_tool_info_show_owner_mii(AmiToolApp* app);
+bool ami_tool_info_show_settings(AmiToolApp* app);
+bool ami_tool_info_backup_dump(AmiToolApp* app);
+bool ami_tool_info_restore_latest(AmiToolApp* app);
+void ami_tool_info_show_restore_menu(AmiToolApp* app);
+bool ami_tool_info_clear_mii(AmiToolApp* app);
+bool ami_tool_info_show_appdata(AmiToolApp* app);
+bool ami_tool_info_edit_smash(AmiToolApp* app, const char* spec);
+bool ami_tool_info_show_ssbu(AmiToolApp* app);
+bool ami_tool_info_edit_ssbu(AmiToolApp* app, const char* spec);
+bool ami_tool_info_edit_owner(AmiToolApp* app, const char* spec);
 void ami_tool_info_refresh_current_page(AmiToolApp* app);
 void ami_tool_info_navigate_usage(AmiToolApp* app, int32_t delta);
 bool ami_tool_info_get_name_for_id(AmiToolApp* app, const char* id_hex, FuriString* out_name);
@@ -322,6 +389,34 @@ AmiToolWriteStatus ami_tool_write_custom_sequence(
     AmiToolApp* app,
     MfUltralightError* io_error,
     uint16_t* failed_page);
+
+/* Amiibo library (Saved screen) */
+bool ami_tool_library_ensure_index(AmiToolApp* app);
+bool ami_tool_library_rebuild(AmiToolApp* app);
+bool ami_tool_library_load_page(AmiToolApp* app, size_t page);
+size_t ami_tool_library_page_count(void);
+size_t ami_tool_library_total(void);
+const AmiToolLibraryItem* ami_tool_library_page_item(size_t index);
+bool ami_tool_library_open(AmiToolApp* app, size_t local_index);
+bool ami_tool_library_index_page(AmiToolApp* app, size_t page);
+size_t ami_tool_library_index_page_unknown(void);
+size_t ami_tool_library_resolve_page_names(AmiToolApp* app);
+size_t ami_tool_library_series_list(AmiToolApp* app, AmiToolSeriesEntry* out, size_t max);
+size_t ami_tool_library_series_page(AmiToolApp* app, const char* series, size_t page);
+size_t ami_tool_library_series_total(AmiToolApp* app, const char* series);
+void ami_tool_library_toggle_favorite_current(AmiToolApp* app);
+size_t ami_tool_library_favorites_page(AmiToolApp* app, size_t page);
+size_t ami_tool_library_favorites_total(AmiToolApp* app);
+size_t ami_tool_library_search_page(AmiToolApp* app, const char* query, size_t page);
+size_t ami_tool_library_unrecognized_page(AmiToolApp* app, size_t page);
+bool ami_tool_library_is_favorite(AmiToolApp* app, const char* id);
+void ami_tool_library_append_ids(AmiToolApp* app, size_t page);
+bool ami_tool_library_start_index_all(AmiToolApp* app);
+void ami_tool_library_stop_index_all(void);
+bool ami_tool_library_indexing(void);
+size_t ami_tool_library_index_progress(size_t* total);
+bool ami_tool_library_index_finished(void);
+void ami_tool_library_clear_finished(void);
 
 RfidxStatus amiibo_derive_key(
     const DumpedKeySingle* input_key,

@@ -33,10 +33,16 @@ static bool ami_tool_scene_main_menu_require_key(AmiToolApp* app) {
     case AmiToolRetailKeyStatusOk:
         return true;
     case AmiToolRetailKeyStatusNotFound:
-        ami_tool_scene_main_menu_show_error(app, "key_retail.bin file does not exist");
+        ami_tool_scene_main_menu_show_error(
+            app,
+            "key_retail.bin not found.\n\nPut the 160-byte Amiibo retail key at:\n"
+            "/ext/apps_data/ami_tool/key_retail.bin\n\nThen retry.");
         break;
     case AmiToolRetailKeyStatusInvalidSize:
-        ami_tool_scene_main_menu_show_error(app, "key_retail.bin file data error");
+        ami_tool_scene_main_menu_show_error(
+            app,
+            "key_retail.bin has the wrong size.\n\nIt must be exactly 160 bytes.\n"
+            "File is at:\n/ext/apps_data/ami_tool/key_retail.bin");
         break;
     default:
         ami_tool_scene_main_menu_show_error(app, "key_retail.bin file read error");

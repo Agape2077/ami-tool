@@ -1,364 +1,547 @@
 #include "ami_tool_i.h"
+#include <stdio.h>
 #include <string.h>
-#include <ctype.h>
-#include <nfc/nfc_device.h>
 
-#define AMI_TOOL_SAVED_MENU_INDEX_PREV_PAGE UINT32_C(0xFFFFFFFC)
-#define AMI_TOOL_SAVED_MENU_INDEX_NEXT_PAGE UINT32_C(0xFFFFFFFB)
-#define AMI_TOOL_SAVED_FILENAME_MAX 254
+#define SAVED_NAV_PREV (0xFFFFFFF0U)
+#define SAVED_NAV_NEXT (0xFFFFFFF1U)
+#define SAVED_NAV_INDEX (0xFFFFFFF2U)
+#define SAVED_NAV_RESCAN (0xFFFFFFF3U)
+#define SAVED_NAV_INDEX_ALL (0xFFFFFFF4U)
+#define SAVED_NAV_BY_SERIES (0xFFFFFFF5U)
+#define SAVED_NAV_BACK_ALL (0xFFFFFFF6U)
+#define SAVED_NAV_BACK_SERIES (0xFFFFFFF7U)
+#define SAVED_NAV_FAVORITES (0xFFFFFFF8U)
+#define SAVED_NAV_SEARCH (0xFFFFFFF9U)
+#define SAVED_NAV_UNRECOGNIZED (0xFFFFFFFAU)
+#define SAVED_NAV_SERIES_ITEM (0xFFFF0000U)
+#define SAVED_NAV_FILE_ITEM (0xFFFF1000U)
 
 typedef enum {
-    AmiToolSavedLoadOk,
-    AmiToolSavedLoadNoFolder,
-    AmiToolSavedLoadError,
-} AmiToolSavedLoadStatus;
+    LibraryModeAll,
+    LibraryModeSeriesList,
+    LibraryModeSeriesItems,
+    LibraryModeFavorites,
+    LibraryModeSearch,
+    LibraryModeUnrecognized,
+} LibraryMode;
 
-static void ami_tool_scene_saved_show_message(AmiToolApp* app, const char* message);
-static void ami_tool_scene_saved_show_menu(AmiToolApp* app);
-static bool ami_tool_scene_saved_parse_filename(
-    const char* name,
-    char* id_hex,
-    size_t id_size,
-    char* uid_hex,
-    size_t uid_size);
-static AmiToolSavedLoadStatus ami_tool_scene_saved_load_page(AmiToolApp* app);
-static void ami_tool_scene_saved_refresh(AmiToolApp* app);
-static void ami_tool_scene_saved_submenu_callback(void* context, uint32_t index);
-static bool ami_tool_scene_saved_load_entry(AmiToolApp* app, size_t index);
+static LibraryMode library_mode = LibraryModeAll;
+static size_t saved_page = 0;
+static bool saved_detail_visible = false;
+static bool saved_indexing_ui = false;
 
-static void ami_tool_scene_saved_show_message(AmiToolApp* app, const char* message) {
-    furi_assert(app);
-    furi_string_set(
-        app->text_box_store,
-        message ? message : "No saved Amiibo files.\nUse Save to Storage first.");
+static AmiToolSeriesEntry series_entries[AMI_TOOL_SERIES_MAX];
+static size_t series_count = 0;
+static size_t series_selected = 0;
+static size_t series_page = 0;
+static size_t series_total = 0;
+static size_t fav_page = 0;
+static char search_query[24] = "";
+static size_t search_page_index = 0;
+static size_t unrec_page = 0;
+static bool search_input_active = false;
+
+static void ami_tool_scene_saved_build_menu(AmiToolApp* app);
+
+static void ami_tool_scene_saved_show_text(AmiToolApp* app, const char* text) {
+    furi_string_set(app->text_box_store, text);
     text_box_reset(app->text_box);
     text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
     view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
-    app->saved_info_visible = false;
 }
 
-static bool ami_tool_scene_saved_is_hex_string(const char* str) {
-    if(!str || *str == '\0') {
-        return false;
-    }
-    while(*str) {
-        if(!isxdigit((unsigned char)*str)) {
-            return false;
-        }
-        str++;
-    }
-    return true;
+static void ami_tool_scene_saved_show_progress(AmiToolApp* app) {
+    size_t total = 0;
+    size_t done = ami_tool_library_index_progress(&total);
+    char text[128];
+    snprintf(
+        text,
+        sizeof(text),
+        "Building library index...\n\n%u / %u files\n\nBack cancels.",
+        (unsigned)done,
+        (unsigned)total);
+    furi_string_set(app->text_box_store, text);
+    text_box_reset(app->text_box);
+    text_box_set_text(app->text_box, furi_string_get_cstr(app->text_box_store));
 }
 
-static bool ami_tool_scene_saved_parse_filename(
-    const char* name,
-    char* id_hex,
-    size_t id_size,
-    char* uid_hex,
-    size_t uid_size) {
-    if(!name || !id_hex || !uid_hex || id_size == 0 || uid_size == 0) {
-        return false;
+static void ami_tool_scene_saved_open_item(AmiToolApp* app, size_t local_index) {
+    const AmiToolLibraryItem* item = ami_tool_library_page_item(local_index);
+    if(!item) return;
+
+    saved_detail_visible = true;
+
+    if(!ami_tool_library_open(app, local_index)) {
+        char text[224];
+        snprintf(
+            text,
+            sizeof(text),
+            "Cannot open this file as an Amiibo dump.\n\n%s\n\n"
+            "Only MIFARE Ultralight / NTAG215 dumps are supported.",
+            item->rel);
+        ami_tool_scene_saved_show_text(app, text);
+        return;
     }
 
-    size_t name_len = strlen(name);
-    if(name_len <= 4) {
-        return false;
-    }
+    ami_tool_library_append_ids(app, saved_page);
 
-    const char* extension = name + name_len - 4;
-    if(!(tolower((unsigned char)extension[0]) == '.' &&
-         tolower((unsigned char)extension[1]) == 'n' &&
-         tolower((unsigned char)extension[2]) == 'f' &&
-         tolower((unsigned char)extension[3]) == 'c')) {
-        return false;
-    }
-
-    size_t core_len = name_len - 4;
-    char buffer[AMI_TOOL_SAVED_FILENAME_MAX + 1];
-    if(core_len >= sizeof(buffer)) {
-        return false;
-    }
-    memcpy(buffer, name, core_len);
-    buffer[core_len] = '\0';
-
-    char* dash = strrchr(buffer, '-');
-    if(!dash) {
-        return false;
-    }
-
-    *dash = '\0';
-    const char* id_part = buffer;
-    const char* uid_part = dash + 1;
-
-    if(id_part[0] == '\0' || uid_part[0] == '\0') {
-        return false;
-    }
-    if(!ami_tool_scene_saved_is_hex_string(id_part) ||
-       !ami_tool_scene_saved_is_hex_string(uid_part)) {
-        return false;
-    }
-
-    if(strlen(id_part) + 1 > id_size || strlen(uid_part) + 1 > uid_size) {
-        return false;
-    }
-
-    for(size_t i = 0; id_part[i]; i++) {
-        id_hex[i] = (char)toupper((unsigned char)id_part[i]);
-    }
-    id_hex[strlen(id_part)] = '\0';
-
-    for(size_t i = 0; uid_part[i]; i++) {
-        uid_hex[i] = (char)toupper((unsigned char)uid_part[i]);
-    }
-    uid_hex[strlen(uid_part)] = '\0';
-
-    return true;
-}
-
-static AmiToolSavedLoadStatus ami_tool_scene_saved_load_page(AmiToolApp* app) {
-    for(size_t i = 0; i < AMI_TOOL_SAVED_MAX_PAGE_ITEMS; i++) {
-        furi_string_reset(app->saved_page_display[i]);
-        furi_string_reset(app->saved_page_paths[i]);
-        furi_string_reset(app->saved_page_ids[i]);
-    }
-    app->saved_page_entry_count = 0;
-    app->saved_has_next_page = false;
-
-    File* dir = storage_file_alloc(app->storage);
-    if(!dir) {
-        return AmiToolSavedLoadError;
-    }
-
-    if(storage_common_stat(app->storage, AMI_TOOL_NFC_FOLDER, NULL) != FSE_OK) {
-        storage_file_free(dir);
-        return AmiToolSavedLoadNoFolder;
-    }
-
-    if(!storage_dir_open(dir, AMI_TOOL_NFC_FOLDER)) {
-        storage_file_free(dir);
-        return AmiToolSavedLoadError;
-    }
-
-    FileInfo info;
-    char name_buffer[AMI_TOOL_SAVED_FILENAME_MAX + 1];
-    size_t valid_index = 0;
-    size_t added = 0;
-    bool has_next = false;
-    FuriString* lookup_name = furi_string_alloc();
-
-    while(storage_dir_read(dir, &info, name_buffer, sizeof(name_buffer))) {
-        if(file_info_is_dir(&info)) {
-            continue;
-        }
-
-        char id_hex[32] = {0};
-        char uid_hex[32] = {0};
-        if(!ami_tool_scene_saved_parse_filename(
-               name_buffer, id_hex, sizeof(id_hex), uid_hex, sizeof(uid_hex))) {
-            continue;
-        }
-
-        if(valid_index < app->saved_page_offset) {
-            valid_index++;
-            continue;
-        }
-
-        if(added < AMI_TOOL_SAVED_MAX_PAGE_ITEMS) {
-            FuriString* path = app->saved_page_paths[added];
-            FuriString* display = app->saved_page_display[added];
-            FuriString* id_store = app->saved_page_ids[added];
-            furi_string_printf(path, "%s/%s", AMI_TOOL_NFC_FOLDER, name_buffer);
-            furi_string_set(id_store, id_hex);
-
-            furi_string_reset(lookup_name);
-            if(!ami_tool_info_get_name_for_id(app, id_hex, lookup_name)) {
-                furi_string_set(lookup_name, id_hex);
-            }
-
-            furi_string_set(display, furi_string_get_cstr(lookup_name));
-            furi_string_push_back(display, ' ');
-            furi_string_cat(display, uid_hex);
-
-            added++;
-            valid_index++;
-        } else {
-            has_next = true;
-            break;
-        }
-    }
-
-    furi_string_free(lookup_name);
-    storage_dir_close(dir);
-    storage_file_free(dir);
-
-    app->saved_page_entry_count = added;
-    app->saved_has_next_page = has_next;
-
-    return AmiToolSavedLoadOk;
-}
-
-static void ami_tool_scene_saved_show_menu(AmiToolApp* app) {
-    submenu_reset(app->submenu);
-    submenu_set_header(app->submenu, "Saved Amiibo");
-
-    if(app->saved_page_offset > 0) {
-        submenu_add_item(
-            app->submenu,
-            "Prev Page",
-            AMI_TOOL_SAVED_MENU_INDEX_PREV_PAGE,
-            ami_tool_scene_saved_submenu_callback,
-            app);
-    }
-
-    for(size_t i = 0; i < app->saved_page_entry_count; i++) {
-        submenu_add_item(
-            app->submenu,
-            furi_string_get_cstr(app->saved_page_display[i]),
-            i,
-            ami_tool_scene_saved_submenu_callback,
-            app);
-    }
-
-    if(app->saved_has_next_page) {
-        submenu_add_item(
-            app->submenu,
-            "Next Page",
-            AMI_TOOL_SAVED_MENU_INDEX_NEXT_PAGE,
-            ami_tool_scene_saved_submenu_callback,
-            app);
-    }
-
-    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
-    app->saved_info_visible = false;
-}
-
-static void ami_tool_scene_saved_refresh(AmiToolApp* app) {
-    size_t attempts = 0;
-    AmiToolSavedLoadStatus status;
-
-    do {
-        status = ami_tool_scene_saved_load_page(app);
-        if(status != AmiToolSavedLoadOk) {
-            break;
-        }
-        if(app->saved_page_entry_count == 0 && app->saved_page_offset > 0) {
-            if(app->saved_page_offset >= AMI_TOOL_SAVED_MAX_PAGE_ITEMS) {
-                app->saved_page_offset -= AMI_TOOL_SAVED_MAX_PAGE_ITEMS;
-            } else {
-                app->saved_page_offset = 0;
-            }
-        } else {
-            break;
-        }
-    } while(++attempts < 2);
-
-    if(status == AmiToolSavedLoadNoFolder) {
-        ami_tool_scene_saved_show_message(
-            app,
-            "No saved Amiibo folder found.\nUse Save to Storage to create files.");
-    } else if(status == AmiToolSavedLoadError) {
-        ami_tool_scene_saved_show_message(
-            app, "Unable to open saved Amiibo folder.\nCheck storage and try again.");
-    } else if(app->saved_page_entry_count == 0) {
-        ami_tool_scene_saved_show_message(
-            app, "No saved Amiibo files found.\nUse Save to Storage first.");
+    item = ami_tool_library_page_item(local_index);
+    if(item->id[0] != '\0') {
+        ami_tool_info_show_page(app, item->id, false);
     } else {
-        ami_tool_scene_saved_show_menu(app);
+        char text[192];
+        snprintf(
+            text, sizeof(text), "Dump opened, but no Amiibo ID was found.\n\n%s", item->rel);
+        ami_tool_scene_saved_show_text(app, text);
     }
 }
 
-static bool ami_tool_scene_saved_load_entry(AmiToolApp* app, size_t index) {
-    if(index >= app->saved_page_entry_count) {
-        return false;
-    }
-
-    const char* path = furi_string_get_cstr(app->saved_page_paths[index]);
-    if(!path || path[0] == '\0') {
-        return false;
-    }
-
-    bool success = false;
-    NfcDevice* device = nfc_device_alloc();
-    if(!device) {
-        return false;
-    }
-
-    do {
-        if(!nfc_device_load(device, path)) {
-            break;
-        }
-        const MfUltralightData* data =
-            (const MfUltralightData*)nfc_device_get_data(device, NfcProtocolMfUltralight);
-        if(!data || !app->tag_data) {
-            break;
-        }
-        mf_ultralight_copy(app->tag_data, data);
-        app->tag_data_valid = true;
-        if(app->tag_data->pages_total > 0) {
-            size_t pack_page = app->tag_data->pages_total - 1;
-            memcpy(
-                app->tag_pack,
-                app->tag_data->page[pack_page].data,
-                sizeof(app->tag_pack));
-            app->tag_pack_valid = true;
-        }
-
-        size_t uid_len = 0;
-        const uint8_t* uid = mf_ultralight_get_uid(app->tag_data, &uid_len);
-        if(uid && uid_len > 0) {
-            ami_tool_store_uid(app, uid, uid_len);
-            if(ami_tool_compute_password_from_uid(uid, uid_len, &app->tag_password)) {
-                app->tag_password_valid = true;
-            } else {
-                app->tag_password_valid = false;
-                memset(&app->tag_password, 0, sizeof(app->tag_password));
-            }
-        } else {
-            app->tag_password_valid = false;
-            memset(&app->tag_password, 0, sizeof(app->tag_password));
-        }
-
-        amiibo_configure_rf_interface(app->tag_data);
-        const char* id_hex = furi_string_get_cstr(app->saved_page_ids[index]);
-        ami_tool_info_show_page(app, (id_hex && id_hex[0]) ? id_hex : NULL, false);
-        app->saved_info_visible = true;
-        success = true;
-    } while(false);
-
-    nfc_device_free(device);
-    return success;
+static void ami_tool_scene_saved_search_callback(void* context) {
+    AmiToolApp* app = context;
+    app->text_input_active = false;
+    search_input_active = false;
+    search_page_index = 0;
+    /* An empty query would match the whole library; just go back to it. */
+    library_mode = (search_query[0] != '\0') ? LibraryModeSearch : LibraryModeAll;
+    ami_tool_scene_saved_build_menu(app);
 }
 
-static void ami_tool_scene_saved_submenu_callback(void* context, uint32_t index) {
+static void ami_tool_scene_saved_item_callback(void* context, uint32_t index) {
     AmiToolApp* app = context;
 
-    if(index == AMI_TOOL_SAVED_MENU_INDEX_PREV_PAGE) {
-        if(app->saved_page_offset >= AMI_TOOL_SAVED_MAX_PAGE_ITEMS) {
-            app->saved_page_offset -= AMI_TOOL_SAVED_MAX_PAGE_ITEMS;
-        } else {
-            app->saved_page_offset = 0;
+    if(index == SAVED_NAV_PREV) {
+        if(library_mode == LibraryModeSeriesItems) {
+            if(series_page > 0) series_page--;
+        } else if(library_mode == LibraryModeFavorites) {
+            if(fav_page > 0) fav_page--;
+        } else if(library_mode == LibraryModeSearch) {
+            if(search_page_index > 0) search_page_index--;
+        } else if(library_mode == LibraryModeUnrecognized) {
+            if(unrec_page > 0) unrec_page--;
+        } else if(saved_page > 0) {
+            saved_page--;
         }
-        ami_tool_scene_saved_refresh(app);
-    } else if(index == AMI_TOOL_SAVED_MENU_INDEX_NEXT_PAGE) {
-        app->saved_page_offset += app->saved_page_entry_count;
-        ami_tool_scene_saved_refresh(app);
-    } else {
-        if(!ami_tool_scene_saved_load_entry(app, index)) {
-            ami_tool_scene_saved_show_message(
-                app, "Unable to load Amiibo file.\nCheck the NFC file and try again.");
-        }
+        ami_tool_scene_saved_build_menu(app);
+        return;
     }
+    if(index == SAVED_NAV_NEXT) {
+        if(library_mode == LibraryModeSeriesItems) {
+            series_page++;
+        } else if(library_mode == LibraryModeFavorites) {
+            fav_page++;
+        } else if(library_mode == LibraryModeSearch) {
+            search_page_index++;
+        } else if(library_mode == LibraryModeUnrecognized) {
+            unrec_page++;
+        } else {
+            saved_page++;
+        }
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_INDEX) {
+        ami_tool_library_index_page(app, saved_page);
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_INDEX_ALL) {
+        if(ami_tool_library_start_index_all(app)) {
+            saved_indexing_ui = true;
+            ami_tool_scene_saved_show_progress(app);
+            view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextBox);
+        } else {
+            ami_tool_scene_saved_show_text(app, "Cannot start indexing.\nLibrary is empty.");
+        }
+        return;
+    }
+    if(index == SAVED_NAV_RESCAN) {
+        ami_tool_library_rebuild(app);
+        saved_page = 0;
+        library_mode = LibraryModeAll;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_BY_SERIES) {
+        series_count = ami_tool_library_series_list(app, series_entries, AMI_TOOL_SERIES_MAX);
+        library_mode = LibraryModeSeriesList;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_FAVORITES) {
+        fav_page = 0;
+        library_mode = LibraryModeFavorites;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_UNRECOGNIZED) {
+        unrec_page = 0;
+        library_mode = LibraryModeUnrecognized;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_SEARCH) {
+        search_input_active = true;
+        app->text_input_active = true;
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "Search name or series");
+        text_input_set_result_callback(
+            app->text_input,
+            ami_tool_scene_saved_search_callback,
+            app,
+            search_query,
+            sizeof(search_query),
+            false);
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewTextInput);
+        return;
+    }
+    if(index == SAVED_NAV_BACK_ALL) {
+        library_mode = LibraryModeAll;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if(index == SAVED_NAV_BACK_SERIES) {
+        library_mode = LibraryModeSeriesList;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if((index & 0xFFFFF000U) == SAVED_NAV_SERIES_ITEM) {
+        size_t selected = index & 0x00000FFFU;
+        if(selected >= series_count) return;
+        series_selected = selected;
+        series_page = 0;
+        series_total =
+            ami_tool_library_series_page(app, series_entries[selected].name, 0);
+        library_mode = LibraryModeSeriesItems;
+        ami_tool_scene_saved_build_menu(app);
+        return;
+    }
+    if((index & 0xFFFFF000U) == SAVED_NAV_FILE_ITEM) {
+        ami_tool_scene_saved_open_item(app, index & 0x00000FFFU);
+        return;
+    }
+
+    /* LibraryModeAll: plain global index */
+    size_t base = saved_page * AMI_TOOL_LIBRARY_PAGE;
+    if(index < base) return;
+    ami_tool_scene_saved_open_item(app, index - base);
+}
+
+static void ami_tool_scene_saved_add_paging(AmiToolApp* app, size_t page, size_t pages) {
+    if(page > 0) {
+        submenu_add_item(
+            app->submenu, "< Previous page", SAVED_NAV_PREV, ami_tool_scene_saved_item_callback, app);
+    }
+    if(page + 1 < pages) {
+        submenu_add_item(
+            app->submenu, "Next page >", SAVED_NAV_NEXT, ami_tool_scene_saved_item_callback, app);
+    }
+}
+
+static void ami_tool_scene_saved_build_menu(AmiToolApp* app) {
+    submenu_reset(app->submenu);
+
+    if(library_mode == LibraryModeSeriesList) {
+        char header[48];
+        snprintf(header, sizeof(header), "Series (%u)", (unsigned)series_count);
+        submenu_set_header(app->submenu, header);
+
+        submenu_add_item(
+            app->submenu, "Back to library", SAVED_NAV_BACK_ALL, ami_tool_scene_saved_item_callback, app);
+
+        for(size_t i = 0; i < series_count; i++) {
+            char label[AMI_TOOL_LIBRARY_SERIES_MAX + 12];
+            snprintf(
+                label,
+                sizeof(label),
+                "%.20s (%u)",
+                series_entries[i].name,
+                (unsigned)series_entries[i].count);
+            submenu_add_item(
+                app->submenu,
+                label,
+                SAVED_NAV_SERIES_ITEM | (uint32_t)i,
+                ami_tool_scene_saved_item_callback,
+                app);
+        }
+
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+        return;
+    }
+
+    if(library_mode == LibraryModeSeriesItems) {
+        size_t pages = (series_total + AMI_TOOL_LIBRARY_PAGE - 1) / AMI_TOOL_LIBRARY_PAGE;
+        if(pages == 0) pages = 1;
+        if(series_page >= pages) series_page = pages - 1;
+
+        series_total = ami_tool_library_series_page(
+            app, series_entries[series_selected].name, series_page);
+
+        char header[64];
+        snprintf(
+            header,
+            sizeof(header),
+            "%.18s %u/%u",
+            series_entries[series_selected].name,
+            (unsigned)(series_page + 1),
+            (unsigned)pages);
+        submenu_set_header(app->submenu, header);
+
+        submenu_add_item(
+            app->submenu, "Back to series", SAVED_NAV_BACK_SERIES, ami_tool_scene_saved_item_callback, app);
+
+        size_t count = ami_tool_library_page_count();
+        for(size_t i = 0; i < count; i++) {
+            const AmiToolLibraryItem* item = ami_tool_library_page_item(i);
+            char label[AMI_TOOL_LIBRARY_NAME_MAX + 8];
+            if(item->recognized) {
+                snprintf(label, sizeof(label), "%s", item->name);
+            } else {
+                snprintf(label, sizeof(label), "[NFC] %.32s", item->rel);
+            }
+            submenu_add_item(
+                app->submenu,
+                label,
+                SAVED_NAV_FILE_ITEM | (uint32_t)i,
+                ami_tool_scene_saved_item_callback,
+                app);
+        }
+
+        ami_tool_scene_saved_add_paging(app, series_page, pages);
+
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+        return;
+    }
+
+    if(library_mode == LibraryModeFavorites) {
+        size_t total = ami_tool_library_favorites_page(app, fav_page);
+        size_t pages = (total + AMI_TOOL_LIBRARY_PAGE - 1) / AMI_TOOL_LIBRARY_PAGE;
+        if(pages == 0) pages = 1;
+        if(fav_page >= pages) {
+            fav_page = pages - 1;
+            total = ami_tool_library_favorites_page(app, fav_page);
+        }
+
+        char header[64];
+        snprintf(
+            header,
+            sizeof(header),
+            "Favorites %u/%u - %u",
+            (unsigned)(fav_page + 1),
+            (unsigned)pages,
+            (unsigned)total);
+        submenu_set_header(app->submenu, header);
+
+        submenu_add_item(
+            app->submenu, "Back to library", SAVED_NAV_BACK_ALL, ami_tool_scene_saved_item_callback, app);
+
+        size_t count = ami_tool_library_page_count();
+        for(size_t i = 0; i < count; i++) {
+            const AmiToolLibraryItem* item = ami_tool_library_page_item(i);
+            char label[AMI_TOOL_LIBRARY_NAME_MAX + 8];
+            if(item->recognized) {
+                snprintf(label, sizeof(label), "%s", item->name);
+            } else {
+                snprintf(label, sizeof(label), "[NFC] %.32s", item->rel);
+            }
+            submenu_add_item(
+                app->submenu,
+                label,
+                SAVED_NAV_FILE_ITEM | (uint32_t)i,
+                ami_tool_scene_saved_item_callback,
+                app);
+        }
+
+        ami_tool_scene_saved_add_paging(app, fav_page, pages);
+
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+        return;
+    }
+
+    if(library_mode == LibraryModeSearch) {
+        size_t total = ami_tool_library_search_page(app, search_query, search_page_index);
+        size_t pages = (total + AMI_TOOL_LIBRARY_PAGE - 1) / AMI_TOOL_LIBRARY_PAGE;
+        if(pages == 0) pages = 1;
+        if(search_page_index >= pages) {
+            search_page_index = pages - 1;
+            total = ami_tool_library_search_page(app, search_query, search_page_index);
+        }
+
+        char header[64];
+        snprintf(
+            header,
+            sizeof(header),
+            "\"%.12s\" %u/%u - %u",
+            search_query,
+            (unsigned)(search_page_index + 1),
+            (unsigned)pages,
+            (unsigned)total);
+        submenu_set_header(app->submenu, header);
+
+        submenu_add_item(
+            app->submenu, "Back to library", SAVED_NAV_BACK_ALL, ami_tool_scene_saved_item_callback, app);
+
+        size_t count = ami_tool_library_page_count();
+        for(size_t i = 0; i < count; i++) {
+            const AmiToolLibraryItem* item = ami_tool_library_page_item(i);
+            char label[AMI_TOOL_LIBRARY_NAME_MAX + 8];
+            if(item->recognized) {
+                snprintf(label, sizeof(label), "%s", item->name);
+            } else {
+                snprintf(label, sizeof(label), "[NFC] %.32s", item->rel);
+            }
+            submenu_add_item(
+                app->submenu,
+                label,
+                SAVED_NAV_FILE_ITEM | (uint32_t)i,
+                ami_tool_scene_saved_item_callback,
+                app);
+        }
+
+        ami_tool_scene_saved_add_paging(app, search_page_index, pages);
+
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+        return;
+    }
+
+    if(library_mode == LibraryModeUnrecognized) {
+        size_t total = ami_tool_library_unrecognized_page(app, unrec_page);
+        size_t pages = (total + AMI_TOOL_LIBRARY_PAGE - 1) / AMI_TOOL_LIBRARY_PAGE;
+        if(pages == 0) pages = 1;
+        if(unrec_page >= pages) {
+            unrec_page = pages - 1;
+            total = ami_tool_library_unrecognized_page(app, unrec_page);
+        }
+
+        char header[64];
+        snprintf(
+            header,
+            sizeof(header),
+            "Unrecognized %u/%u - %u",
+            (unsigned)(unrec_page + 1),
+            (unsigned)pages,
+            (unsigned)total);
+        submenu_set_header(app->submenu, header);
+
+        submenu_add_item(
+            app->submenu, "Back to library", SAVED_NAV_BACK_ALL, ami_tool_scene_saved_item_callback, app);
+
+        size_t count = ami_tool_library_page_count();
+        for(size_t i = 0; i < count; i++) {
+            const AmiToolLibraryItem* item = ami_tool_library_page_item(i);
+            char label[AMI_TOOL_LIBRARY_NAME_MAX + 8];
+            snprintf(label, sizeof(label), "[NFC] %.32s", item->rel);
+            submenu_add_item(
+                app->submenu,
+                label,
+                SAVED_NAV_FILE_ITEM | (uint32_t)i,
+                ami_tool_scene_saved_item_callback,
+                app);
+        }
+
+        ami_tool_scene_saved_add_paging(app, unrec_page, pages);
+
+        view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
+        return;
+    }
+
+    size_t total = ami_tool_library_total();
+    size_t pages = (total + AMI_TOOL_LIBRARY_PAGE - 1) / AMI_TOOL_LIBRARY_PAGE;
+    if(pages == 0) pages = 1;
+    if(saved_page >= pages) saved_page = pages - 1;
+
+    ami_tool_library_load_page(app, saved_page);
+    size_t count = ami_tool_library_page_count();
+
+    char header[64];
+    snprintf(
+        header,
+        sizeof(header),
+        "Library %u/%u - %u files",
+        (unsigned)(saved_page + 1),
+        (unsigned)pages,
+        (unsigned)total);
+    submenu_set_header(app->submenu, header);
+
+    size_t unknown = ami_tool_library_index_page_unknown();
+    char index_label[48];
+    if(unknown > 0) {
+        snprintf(index_label, sizeof(index_label), "Index this page (%u new)", (unsigned)unknown);
+    } else {
+        snprintf(index_label, sizeof(index_label), "Index this page");
+    }
+    submenu_add_item(
+        app->submenu, index_label, SAVED_NAV_INDEX, ami_tool_scene_saved_item_callback, app);
+    submenu_add_item(
+        app->submenu, "Index ALL files", SAVED_NAV_INDEX_ALL, ami_tool_scene_saved_item_callback, app);
+    submenu_add_item(
+        app->submenu, "Rescan library", SAVED_NAV_RESCAN, ami_tool_scene_saved_item_callback, app);
+    submenu_add_item(
+        app->submenu, "By series >", SAVED_NAV_BY_SERIES, ami_tool_scene_saved_item_callback, app);
+    submenu_add_item(
+        app->submenu, "Favorites", SAVED_NAV_FAVORITES, ami_tool_scene_saved_item_callback, app);
+    submenu_add_item(
+        app->submenu, "Search >", SAVED_NAV_SEARCH, ami_tool_scene_saved_item_callback, app);
+    submenu_add_item(
+        app->submenu, "Unrecognized", SAVED_NAV_UNRECOGNIZED, ami_tool_scene_saved_item_callback, app);
+
+    size_t base = saved_page * AMI_TOOL_LIBRARY_PAGE;
+    for(size_t i = 0; i < count; i++) {
+        const AmiToolLibraryItem* item = ami_tool_library_page_item(i);
+        char label[AMI_TOOL_LIBRARY_NAME_MAX + 8];
+        if(item->recognized) {
+            snprintf(label, sizeof(label), "%s", item->name);
+        } else {
+            snprintf(label, sizeof(label), "[NFC] %.32s", item->rel);
+        }
+        submenu_add_item(
+            app->submenu, label, (uint32_t)(base + i), ami_tool_scene_saved_item_callback, app);
+    }
+
+    ami_tool_scene_saved_add_paging(app, saved_page, pages);
+
+    view_dispatcher_switch_to_view(app->view_dispatcher, AmiToolViewMenu);
 }
 
 void ami_tool_scene_saved_on_enter(void* context) {
     AmiToolApp* app = context;
-    app->saved_page_offset = 0;
-    app->saved_info_visible = false;
-    ami_tool_scene_saved_refresh(app);
+    furi_assert(app);
+
+    saved_page = 0;
+    library_mode = LibraryModeAll;
+    saved_detail_visible = false;
+
+    if(!app->storage) {
+        ami_tool_scene_saved_show_text(app, "Storage service is unavailable.");
+        return;
+    }
+
+    if(!ami_tool_library_ensure_index(app) || ami_tool_library_total() == 0) {
+        ami_tool_scene_saved_show_text(
+            app,
+            "No .nfc files found in /ext/nfc/amiibo or its subfolders.\n\n"
+            "Put Amiibo dumps there, then use Rescan library.");
+        return;
+    }
+
+    ami_tool_scene_saved_build_menu(app);
 }
 
 bool ami_tool_scene_saved_on_event(void* context, SceneManagerEvent event) {
     AmiToolApp* app = context;
+
+    if(event.type == SceneManagerEventTypeTick) {
+        if(!saved_indexing_ui) return false;
+
+        if(ami_tool_library_index_finished()) {
+            ami_tool_library_clear_finished();
+            ami_tool_library_stop_index_all();
+            saved_indexing_ui = false;
+            ami_tool_scene_saved_build_menu(app);
+        } else {
+            ami_tool_scene_saved_show_progress(app);
+        }
+        return true;
+    }
 
     if(event.type == SceneManagerEventTypeCustom) {
         switch(event.event) {
@@ -374,7 +557,9 @@ bool ami_tool_scene_saved_on_event(void* context, SceneManagerEvent event) {
         case AmiToolEventInfoActionEmulate:
             if(!ami_tool_info_start_emulation(app)) {
                 ami_tool_info_show_action_message(
-                    app, "Unable to start emulation.\nLoad a saved Amiibo first.");
+                    app,
+                    "Unable to start emulation.\n\nOpen an Amiibo from the library first.\n"
+                    "If one is already open, its UID could not be read,\nso the tag password cannot be derived.");
             }
             return true;
         case AmiToolEventInfoActionUsage:
@@ -396,8 +581,7 @@ bool ami_tool_scene_saved_on_event(void* context, SceneManagerEvent event) {
         case AmiToolEventInfoActionSaveToStorage:
             if(!ami_tool_info_save_to_storage(app)) {
                 ami_tool_info_show_action_message(
-                    app,
-                    "Unable to save Amiibo.\nLoad one first and check storage access.");
+                    app, "Unable to save Amiibo.\nCheck storage access.");
             }
             return true;
         case AmiToolEventUsagePrevPage:
@@ -410,6 +594,23 @@ bool ami_tool_scene_saved_on_event(void* context, SceneManagerEvent event) {
             break;
         }
     } else if(event.type == SceneManagerEventTypeBack) {
+        if(app->text_input_active) {
+            app->text_input_active = false;
+            ami_tool_info_show_actions_menu(app);
+            return true;
+        }
+        if(search_input_active) {
+            search_input_active = false;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
+        if(saved_indexing_ui) {
+            ami_tool_library_stop_index_all();
+            ami_tool_library_clear_finished();
+            saved_indexing_ui = false;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
         if(app->write_in_progress) {
             if(app->write_waiting_for_tag) {
                 ami_tool_info_request_write_cancel(app);
@@ -430,16 +631,46 @@ bool ami_tool_scene_saved_on_event(void* context, SceneManagerEvent event) {
             ami_tool_info_show_actions_menu(app);
             return true;
         }
+        if(app->info_menu_depth >= 2) {
+            ami_tool_info_show_actions_menu(app);
+            return true;
+        }
         if(app->info_actions_visible) {
             app->info_actions_visible = false;
+            app->info_menu_depth = 0;
             ami_tool_info_refresh_current_page(app);
             return true;
         }
-        if(app->saved_info_visible) {
-            ami_tool_scene_saved_show_menu(app);
+        if(saved_detail_visible) {
+            saved_detail_visible = false;
+            ami_tool_scene_saved_build_menu(app);
             return true;
         }
-        return false;
+        if(library_mode == LibraryModeSeriesItems) {
+            library_mode = LibraryModeSeriesList;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
+        if(library_mode == LibraryModeFavorites) {
+            library_mode = LibraryModeAll;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
+        if(library_mode == LibraryModeSearch) {
+            library_mode = LibraryModeAll;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
+        if(library_mode == LibraryModeUnrecognized) {
+            library_mode = LibraryModeAll;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
+        if(library_mode == LibraryModeSeriesList) {
+            library_mode = LibraryModeAll;
+            ami_tool_scene_saved_build_menu(app);
+            return true;
+        }
     }
 
     return false;
@@ -447,9 +678,15 @@ bool ami_tool_scene_saved_on_event(void* context, SceneManagerEvent event) {
 
 void ami_tool_scene_saved_on_exit(void* context) {
     AmiToolApp* app = context;
-    ami_tool_info_stop_emulation(app);
-    ami_tool_info_abort_write(app);
-    app->info_actions_visible = false;
-    app->info_action_message_visible = false;
-    app->saved_info_visible = false;
+    if(app) app->text_input_active = false;
+    ami_tool_library_stop_index_all();
+    ami_tool_library_clear_finished();
+    saved_indexing_ui = false;
+    search_input_active = false;
+    saved_page = 0;
+    series_page = 0;
+    fav_page = 0;
+    unrec_page = 0;
+    library_mode = LibraryModeAll;
+    saved_detail_visible = false;
 }

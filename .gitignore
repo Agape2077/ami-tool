@@ -1,12 +1,14 @@
-# ufbt files and IDE settings
-dist/*
-.vscode
-.idea
-.clang-format
-.clangd
-.editorconfig
-.env
-.ufbt
+﻿dist/
+*.fap
+*.elf
+.vscode/compile_commands.json
 
-# Experimental scripts and data
-/experiment/*
+# Amiibo key material must never be committed
+key_retail.bin
+locked-secret.bin
+unfixed-info.bin
+
+# local test dumps
+AllyComplete947.bin
+Ally_Complete(Air Riders).bin
+docs/*.patch
